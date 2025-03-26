@@ -73,7 +73,7 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     beta: float = 2.0
     """coefficient for state dependent entropy scaling"""
-    d = 0.02
+    delta: float = 0.02
     """coefficient for reward sparsity"""
 
 
@@ -324,7 +324,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     # Scaling entropy based on normalized CI (β is the sensitivity hyperparameter)
                     cis_scaling = torch.exp(-args.beta * ci)
 
-                    max_q = args.d / (1 - args.gamma)
+                    max_q = args.delta / (1 - args.gamma)
                     max_min_qf_values, _ = min_qf_values.max(dim=1)
                     scaling = torch.minimum(max_min_qf_values, torch.tensor(max_q, device=max_min_qf_values.device)).mean()
 
