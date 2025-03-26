@@ -69,7 +69,7 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
+    target_entropy_scale: float = 1.6
     """coefficient for scaling the autotune entropy target"""
     beta: float = 1.0
     """coefficient for state dependent entropy scaling"""
@@ -309,6 +309,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 # CIS-SAC Actor training
                 _, log_pi, action_probs = actor.get_action(data.observations)
+                policy_dist = Categorical(probs=action_probs)
+                entropy = policy_dist.entropy().mean().item()
+
                 with torch.no_grad():
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
@@ -360,6 +363,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/ci_normalized", ci_normalized.mean(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 
