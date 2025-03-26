@@ -47,7 +47,7 @@ class Args:
     """the id of the environment"""
     total_timesteps: int = 5000000
     """total timesteps of the experiments"""
-    buffer_size: int = int(2e6)
+    buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
     gamma: float = 0.99
     """the discount factor gamma"""

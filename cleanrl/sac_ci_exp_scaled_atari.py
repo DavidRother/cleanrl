@@ -43,11 +43,11 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "BeamRiderNoFrameskip-v4"
+    env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
     total_timesteps: int = 5000000
     """total timesteps of the experiments"""
-    buffer_size: int = int(2e6)
+    buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -73,7 +73,8 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     beta: float = 2.0
     """coefficient for state dependent entropy scaling"""
-    max_q: float = 2.0
+    d = 0.02
+    """coefficient for reward sparsity"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -320,15 +321,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                                 min_qf_values.size(1) - 1)
                     ci = min_qf_values - q_mean_others
 
-                    # Compute the Q-value range for normalization: R(s) = max Q(s,a) - min Q(s,a)
-                    q_range = min_qf_values.max(dim=1, keepdim=True)[0] - min_qf_values.min(dim=1, keepdim=True)[0]
-                    eps = 1e-6  # Small constant to avoid division by zero
-
-                    # Normalize the counterfactual influence
-                    ci_normalized = ci / (q_range + eps)
-
                     # Scaling entropy based on normalized CI (β is the sensitivity hyperparameter)
-                    cis_scaling = torch.exp(-args.beta * ci_normalized)
+                    cis_scaling = torch.exp(-args.beta * ci)
+
+                    max_q = args.d / (1 - args.gamma)
+                    max_min_qf_values, _ = min_qf_values.max(dim=1)
+                    scaling = torch.minimum(max_min_qf_values, torch.tensor(max_q, device=max_min_qf_values.device)).mean()
 
                 # Adapted Actor Loss with CIS scaling (element-wise)
                 actor_loss = (action_probs * ((alpha * cis_scaling * log_pi) - min_qf_values)).mean()
@@ -339,7 +337,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 if args.autotune:
                     # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy * scaling).detach())).mean()
 
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
@@ -362,6 +360,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 writer.add_scalar("losses/cis_scaling_mean", cis_scaling.mean(), global_step)
+                writer.add_scalar("losses/target_entropy_scaling", scaling.detach().item(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:
