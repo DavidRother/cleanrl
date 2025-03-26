@@ -43,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "BeamRiderNoFrameskip-v4"
+    env_id: str = "MinAtar/Breakout-v1"
     """the id of the environment"""
     total_timesteps: int = 5000000
     """total timesteps of the experiments"""
@@ -71,8 +71,6 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    beta: float = 2.0
-    """coefficient for state dependent entropy scaling"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -84,14 +82,14 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
 
-        env = NoopResetEnv(env, noop_max=30)
+        # env = NoopResetEnv(env, noop_max=30)
         env = MaxAndSkipEnv(env, skip=4)
         env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():
-            env = FireResetEnv(env)
+        # if "FIRE" in env.unwrapped.get_action_meanings():
+        #     env = FireResetEnv(env)
         env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
+        # env = gym.wrappers.ResizeObservation(env, (84, 84))
+        # env = gym.wrappers.GrayScaleObservation(env)
         env = gym.wrappers.FrameStack(env, 4)
 
         env.action_space.seed(seed)
@@ -307,30 +305,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 qf_loss.backward()
                 q_optimizer.step()
 
-                # CIS-SAC Actor training
+                # ACTOR training
                 _, log_pi, action_probs = actor.get_action(data.observations)
                 with torch.no_grad():
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
                     min_qf_values = torch.min(qf1_values, qf2_values)
-
-                    # Compute Counterfactual Influence (CI)
-                    q_mean_others = (min_qf_values.sum(dim=1, keepdim=True) - min_qf_values) / (
-                                min_qf_values.size(1) - 1)
-                    ci = min_qf_values - q_mean_others
-
-                    # Compute the Q-value range for normalization: R(s) = max Q(s,a) - min Q(s,a)
-                    q_range = min_qf_values.max(dim=1, keepdim=True)[0] - min_qf_values.min(dim=1, keepdim=True)[0]
-                    eps = 1e-6  # Small constant to avoid division by zero
-
-                    # Normalize the counterfactual influence
-                    ci_normalized = ci / (q_range + eps)
-
-                    # Scaling entropy based on normalized CI (β is the sensitivity hyperparameter)
-                    cis_scaling = torch.exp(-args.beta * ci_normalized)
-
-                # Adapted Actor Loss with CIS scaling (element-wise)
-                actor_loss = (action_probs * ((alpha * cis_scaling * log_pi) - min_qf_values)).mean()
+                # no need for reparameterization, the expectation can be calculated for discrete actions
+                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -360,7 +342,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                writer.add_scalar("losses/cis_scaling_mean", cis_scaling.mean(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:

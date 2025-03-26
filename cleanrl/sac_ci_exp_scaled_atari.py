@@ -73,6 +73,7 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     beta: float = 2.0
     """coefficient for state dependent entropy scaling"""
+    max_q: float = 2.0
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
