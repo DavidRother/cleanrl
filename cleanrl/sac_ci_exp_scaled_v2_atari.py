@@ -367,7 +367,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 writer.add_scalar("losses/cis_scaling_mean", cis_scaling.mean(), global_step)
-                writer.add_scalar("losses/target_entropy_scaling", scaling.detach().item(), global_step)
+                writer.add_scalar("losses/target_entropy_scaling", scaling_factor.detach().item(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 if args.autotune:
