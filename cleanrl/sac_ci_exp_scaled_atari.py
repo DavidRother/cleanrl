@@ -326,7 +326,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     max_q = args.delta / (1 - args.gamma)
                     max_min_qf_values, _ = min_qf_values.max(dim=1)
-                    scaling = torch.minimum(max_min_qf_values, torch.tensor(max_q, device=max_min_qf_values.device)).mean()
+
+                    max_min_qf_values_clipped = max_min_qf_values.clamp(min=1e-6, max=max_q)
+
+                    # Compute the ratio of optimality (close to 1 if optimal, << 1 if far from optimal)
+                    optimality_ratio = max_q / max_min_qf_values
+
+                    # Invert ratio to scale entropy: higher if far from optimal, 1 if optimal
+                    scaling_factor = optimality_ratio.clamp(min=1.0, max=2.0).mean()
 
                 # Adapted Actor Loss with CIS scaling (element-wise)
                 actor_loss = (action_probs * ((alpha * cis_scaling * log_pi) - min_qf_values)).mean()
@@ -337,7 +344,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 if args.autotune:
                     # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy * scaling).detach())).mean()
+                    alpha_loss = (action_probs.detach() *
+                                  (-log_alpha.exp() * (log_pi + target_entropy * scaling_factor).detach())).mean()
 
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
