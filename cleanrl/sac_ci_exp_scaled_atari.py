@@ -45,7 +45,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 2000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -323,6 +323,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     # Scaling entropy based on normalized CI (β is the sensitivity hyperparameter)
                     cis_scaling = torch.exp(-args.beta * ci)
+                    cis_scaling = cis_scaling / cis_scaling.mean()
 
                     max_q = args.delta / (1 - args.gamma)
                     max_min_qf_values, _ = min_qf_values.max(dim=1)
