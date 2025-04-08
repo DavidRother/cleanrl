@@ -44,9 +44,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "MinAtar/Breakout-v1"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -336,8 +336,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 # ACTOR training
                 _, log_pi, action_probs = actor.get_action(data.observations)
-                policy_dist = Categorical(probs=action_probs)
-                entropy = policy_dist.entropy().mean().item()
                 with torch.no_grad():
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
@@ -375,7 +373,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 

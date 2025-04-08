@@ -11,7 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
-import tqdm
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -44,11 +43,11 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "BankHeistNoFrameskip-v4"
     """the id of the environment"""
     total_timesteps: int = 5000000
     """total timesteps of the experiments"""
-    buffer_size: int = int(1e5)
+    buffer_size: int = int(1e6)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -72,23 +71,15 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-
-
-class ChannelFirstWrapper(gym.ObservationWrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        obs_shape = self.observation_space.shape
-        assert len(obs_shape) == 3, "Expected 3D observation (H, W, C)"
-        c, h, w = obs_shape[2], obs_shape[0], obs_shape[1]
-        self.observation_space = gym.spaces.Box(
-            low=0.0,
-            high=1.0,
-            shape=(c, h, w),
-            dtype=self.observation_space.dtype
-        )
-
-    def observation(self, observation: np.ndarray) -> np.ndarray:
-        return np.transpose(observation, (2, 0, 1))
+    beta: float = 10.0
+    """coefficient for state dependent entropy scaling"""
+    delta: float = 0.5
+    """coefficient for reward sparsity"""
+    mu = 0.5  # midpoint optimality
+    tau_trans = 0.1  # transition sharpness
+    min_entropy_factor = 0.2
+    max_entropy_factor = 0.3
+    set_alpha = 0.05
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -99,16 +90,16 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = ChannelFirstWrapper(env)
-        # env = NoopResetEnv(env, noop_max=30)
-        # env = MaxAndSkipEnv(env, skip=4)
-        # env = EpisodicLifeEnv(env)
-        # if "FIRE" in env.unwrapped.get_action_meanings():
-        #     env = FireResetEnv(env)
+
+        env = NoopResetEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        env = EpisodicLifeEnv(env)
+        if "FIRE" in env.unwrapped.get_action_meanings():
+            env = FireResetEnv(env)
         env = ClipRewardEnv(env)
-        # env = gym.wrappers.ResizeObservation(env, (84, 84))
-        # env = gym.wrappers.GrayScaleObservation(env)
-        # env = gym.wrappers.FrameStack(env, 4)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        env = gym.wrappers.GrayScaleObservation(env)
+        env = gym.wrappers.FrameStack(env, 4)
 
         env.action_space.seed(seed)
         return env
@@ -131,19 +122,22 @@ class SoftQNetwork(nn.Module):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 16, kernel_size=3, stride=1)),
+            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
             nn.Flatten(),
         )
 
         with torch.inference_mode():
             output_dim = self.conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 128))
-        self.fc_q = layer_init(nn.Linear(128, envs.single_action_space.n))
+        self.fc1 = layer_init(nn.Linear(output_dim, 512))
+        self.fc_q = layer_init(nn.Linear(512, envs.single_action_space.n))
 
     def forward(self, x):
-        x = torch.as_tensor(x, dtype=torch.float32, device=device)
-        x = F.relu(self.conv(x))
+        x = F.relu(self.conv(x / 255.0))
         x = F.relu(self.fc1(x))
         q_vals = self.fc_q(x)
         return q_vals
@@ -154,18 +148,21 @@ class Actor(nn.Module):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 16, kernel_size=3, stride=1)),
+            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
             nn.Flatten(),
         )
 
         with torch.inference_mode():
             output_dim = self.conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 128))
-        self.fc_logits = layer_init(nn.Linear(128, envs.single_action_space.n))
+        self.fc1 = layer_init(nn.Linear(output_dim, 512))
+        self.fc_logits = layer_init(nn.Linear(512, envs.single_action_space.n))
 
     def forward(self, x):
-        x = torch.as_tensor(x, dtype=torch.float32, device=device)
         x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         logits = self.fc_logits(x)
@@ -173,7 +170,7 @@ class Actor(nn.Module):
         return logits
 
     def get_action(self, x):
-        logits = self(x)
+        logits = self(x / 255.0)
         policy_dist = Categorical(logits=logits)
         action = policy_dist.sample()
         # Action probabilities for calculating the adapted soft-Q loss
@@ -224,6 +221,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
+    start_entropy = torch.log(torch.Tensor([envs.single_action_space.n])).to(device)
+    max_entropy = start_entropy * args.max_entropy_factor
+    min_entropy = start_entropy * args.min_entropy_factor
+    print(max_entropy)
+    print(min_entropy)
+
     actor = Actor(envs).to(device)
     qf1 = SoftQNetwork(envs).to(device)
     qf2 = SoftQNetwork(envs).to(device)
@@ -244,6 +247,16 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     else:
         alpha = args.alpha
 
+    mu = args.mu
+    tau_trans = args.tau_trans
+    set_alpha = args.set_alpha
+
+    current_entropy_target = 0
+
+    running_return = None
+    running_episode_length = None
+    ema_decay = 0.99  # decay factor for the running average
+
     rb = ReplayBuffer(
         args.buffer_size,
         envs.single_observation_space,
@@ -253,13 +266,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     )
     start_time = time.time()
 
-    progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
-    latest_return = None
-    episode_returns = []
-
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in progress_bar:
+    for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -273,25 +282,23 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in infos:
             for info in infos["final_info"]:
-                # Skip the envs that are not done
                 if "episode" not in info:
                     continue
                 episodic_return = info["episode"]["r"]
-                episodic_length = info["episode"]["l"]
-                latest_return = episodic_return
+                # Update the exponential moving average for episodic return
+                if running_return is None:
+                    running_return = episodic_return
+                else:
+                    running_return = ema_decay * running_return + (1 - ema_decay) * episodic_return
+
+                if running_episode_length is None:
+                    running_episode_length = info["episode"]["l"]
+                else:
+                    running_episode_length = ema_decay * running_episode_length + (1 - ema_decay) * info["episode"]["l"]
+
+                print(f"global_step={global_step}, episodic_return={episodic_return}")
                 writer.add_scalar("charts/episodic_return", episodic_return, global_step)
-                writer.add_scalar("charts/episodic_length", episodic_length, global_step)
-
-                # Track the average episodic return over the last 50 episodes
-                episode_returns.append(episodic_return)
-                if len(episode_returns) > 50:
-                    episode_returns.pop(0)
-                avg_return = sum(episode_returns) / len(episode_returns)
-                writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
-
-                # Track (episodic return / episodic length) minus the current alpha
-                adjusted_metric = avg_return - alpha
-                writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
+                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                 break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -308,11 +315,35 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         if global_step > args.learning_starts:
             if global_step % args.update_frequency == 0:
                 data = rb.sample(args.batch_size)
+                entropy_target_max = running_return / ()
+                # use Q-values only for the taken actions
+                qf1_values = qf1(data.observations)
+                qf2_values = qf2(data.observations)
                 # CRITIC training
                 with torch.no_grad():
                     _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                     qf1_next_target = qf1_target(data.next_observations)
                     qf2_next_target = qf2_target(data.next_observations)
+
+                    min_qf_values = torch.min(qf1_values, qf2_values)
+
+                    # Compute Counterfactual Influence (CI)
+                    q_mean_others = (min_qf_values.sum(dim=1, keepdim=True) - min_qf_values) / (
+                            min_qf_values.size(1) - 1)
+                    ci = min_qf_values - q_mean_others
+
+                    # Scaling entropy based on normalized CI (β is the sensitivity hyperparameter)
+                    cis_scaling = torch.exp(-args.beta * ci)
+                    cis_scaling = cis_scaling / cis_scaling.mean()
+
+                    max_q = args.delta / (1 - args.gamma)
+                    max_min_qf_values, _ = min_qf_values.max(dim=1)
+
+                    optimality_ratio = (max_min_qf_values / max_q).mean().clamp(0, 1)
+
+                    sigmoid_scaling = torch.sigmoid((optimality_ratio - mu) / tau_trans)
+
+                    current_entropy_target = min_entropy + (max_entropy - min_entropy) * (1 - sigmoid_scaling)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
                         torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
@@ -321,9 +352,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
                     next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
 
-                # use Q-values only for the taken actions
-                qf1_values = qf1(data.observations)
-                qf2_values = qf2(data.observations)
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
                 qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
@@ -334,15 +362,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 qf_loss.backward()
                 q_optimizer.step()
 
-                # ACTOR training
+                # CIS-SAC Actor training
                 _, log_pi, action_probs = actor.get_action(data.observations)
                 policy_dist = Categorical(probs=action_probs)
                 entropy = policy_dist.entropy().mean().item()
-                with torch.no_grad():
-                    qf1_values = qf1(data.observations)
-                    qf2_values = qf2(data.observations)
-                    min_qf_values = torch.min(qf1_values, qf2_values)
-                # no need for reparameterization, the expectation can be calculated for discrete actions
+
+                # Adapted Actor Loss with CIS scaling (element-wise)
                 actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
@@ -351,7 +376,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 if args.autotune:
                     # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() *
+                                                           (log_pi + adaptive_entropy_target).detach())).mean()
 
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
@@ -373,17 +399,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                sps = int(global_step / (time.time() - start_time))
+                writer.add_scalar("losses/cis_scaling_mean", cis_scaling.mean(), global_step)
+                print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
-
-                progress_bar.set_postfix({
-                    "step": global_step,
-                    "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
-                    "sps": sps
-                })
+                    writer.add_scalar("losses/target_entropy_scaling", adaptive_entropy_target.detach().item(),
+                                      global_step)
 
     envs.close()
     writer.close()

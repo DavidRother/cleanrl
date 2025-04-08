@@ -72,6 +72,7 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+    alpha_eps = 0.01
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -256,6 +257,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
     latest_return = None
     episode_returns = []
+    avg_return_normalised = alpha
+
+    alpha_eps = args.alpha_eps
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -290,7 +294,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
 
                 # Track (episodic return / episodic length) minus the current alpha
-                adjusted_metric = avg_return - alpha
+                avg_return_normalised = avg_return / len(episode_returns)
+                adjusted_metric = avg_return_normalised - alpha
                 writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
                 break
 
@@ -307,6 +312,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.update_frequency == 0:
+                alpha_used = min(alpha, torch.as_tensor(avg_return_normalised, device=device) + alpha_eps)
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
@@ -315,7 +321,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf2_next_target = qf2_target(data.next_observations)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                        torch.min(qf1_next_target, qf2_next_target) - alpha_used * next_state_log_pi
                     )
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
@@ -343,7 +349,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf2_values = qf2(data.observations)
                     min_qf_values = torch.min(qf1_values, qf2_values)
                 # no need for reparameterization, the expectation can be calculated for discrete actions
-                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
+                actor_loss = (action_probs * ((alpha_used * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -373,6 +379,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
+                writer.add_scalar("losses/alpha_used", alpha_used, global_step)
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
