@@ -44,9 +44,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Seaquest-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
-    total_timesteps: int = 3000000
+    total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -72,7 +72,7 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    alpha_eps = 1e-6
+    alpha_eps = 0.01
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
