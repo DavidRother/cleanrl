@@ -2,6 +2,7 @@
 import os
 import random
 import time
+import math
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -70,9 +71,21 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
+    target_entropy_start_exploitation: float = 0.70
     """coefficient for scaling the autotune entropy target"""
+    target_entropy_end_exploitation: float = 0.91
     alpha_eps = 2e-2
+
+
+def target_entropy_from_exploitation_probability(p, n):
+    if p <= 0 or p >= 1:
+        raise ValueError("Exploitation probability p must be in the open interval (0, 1).")
+
+    # Compute the entropy of the distribution.
+    ent = - (p * math.log(p) + (1 - p) * math.log((1 - p) / (n - 1)))
+
+    # Return the SAC-style target entropy (i.e., negative of the computed entropy).
+    return ent
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -238,7 +251,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     # Automatic entropy tuning
     if args.autotune:
-        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
+        target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
+                                                                            envs.single_action_space.n)
+        target_entropy_end = target_entropy_from_exploitation_probability(args.target_entropy_end_exploitation,
+                                                                          envs.single_action_space.n)
+        target_entropy = target_entropy_start
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
@@ -304,6 +321,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 avg_return_normalised = (avg_return - lowest_return) / np.mean(episodic_lengths)
                 adjusted_metric = avg_return_normalised - alpha
                 writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
+                writer.add_scalar("charts/alpha_upper_bound", avg_return_normalised + alpha_eps, global_step)
                 break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -326,6 +344,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 entropy = policy_dist.entropy().mean().item()
 
                 alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy)
+
                 # CRITIC training
                 with torch.no_grad():
                     _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
@@ -365,9 +384,16 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 actor_optimizer.step()
 
                 if args.autotune:
-                    # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                    progress_ratio = min(global_step / args.total_timesteps, 1.0)
+                    current_target_entropy = target_entropy_start + progress_ratio * (
+                                target_entropy_end - target_entropy_start)
+                    writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
+                    # ----------------------------------
 
+                    with torch.no_grad():
+                        log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
+                    alpha_loss = (action_probs.detach() * (
+                                -log_alpha.exp() * (log_pi + current_target_entropy).detach())).mean()
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
                     a_optimizer.step()
