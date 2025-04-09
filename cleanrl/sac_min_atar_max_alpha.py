@@ -304,6 +304,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 avg_return_normalised = (avg_return - lowest_return) / np.mean(episodic_lengths)
                 adjusted_metric = avg_return_normalised - alpha
                 writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
+                writer.add_scalar("charts/alpha_upper_bound", avg_return_normalised + alpha_eps, global_step)
                 break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
