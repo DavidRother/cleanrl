@@ -67,6 +67,10 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     alpha_eps: float = 0.01
+    """automatic tuning of the entropy coefficient"""
+    target_entropy_start_exploitation: float = 0.50
+    """coefficient for scaling the autotune entropy target"""
+    target_entropy_end_exploitation: float = 0.85
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -258,7 +262,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     # Automatic entropy tuning
     if args.autotune:
-        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
+        target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
+                                                                            np.prod(envs.single_action_space.shape))
+        target_entropy_end = target_entropy_from_exploitation_probability(args.target_entropy_end_exploitation,
+                                                                          np.prod(envs.single_action_space.shape))
+        target_entropy = target_entropy_start
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
@@ -341,10 +349,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             data = rb.sample(args.batch_size)
-            pi, log_pi, _ = actor.get_action(data.observations)
-            entropy = (-log_pi).mean().item()
-            alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy.abs())
             with torch.no_grad():
+                pi, log_pi, _ = actor.get_action(data.observations)
+                entropy = (-log_pi).mean().detach()
+                alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy.abs().item())
+
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 qf2_next_target = qf2_target(data.next_observations, next_state_actions)
@@ -366,6 +375,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 for _ in range(
                     args.policy_frequency
                 ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
+
+                    pi, log_pi, _ = actor.get_action(data.observations)
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
@@ -376,8 +387,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     actor_optimizer.step()
 
                     if args.autotune:
+                        progress_ratio = min(global_step / args.total_timesteps, 1.0)
+                        current_target_entropy = target_entropy_start + progress_ratio * (
+                                target_entropy_end - target_entropy_start)
+                        writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
                         with torch.no_grad():
                             _, log_pi, _ = actor.get_action(data.observations)
+                            log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
                         alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
 
                         a_optimizer.zero_grad()
@@ -403,7 +419,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/alpha_used", alpha_used, global_step)
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
+                writer.add_scalar("charts/mean_policy_entropy", entropy.item(), global_step)
                 with torch.no_grad():
                     mean, log_std = actor(data.observations)
                     std = log_std.exp()

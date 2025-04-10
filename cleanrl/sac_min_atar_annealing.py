@@ -47,7 +47,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 3000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -75,6 +75,7 @@ class Args:
     """coefficient for scaling the autotune entropy target"""
     target_entropy_end_exploitation: float = 0.85
     alpha_eps = 2e-2
+
 
 def target_entropy_from_exploitation_probability(p, n):
     if p <= 0 or p >= 1:
@@ -342,7 +343,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 policy_dist = Categorical(probs=action_probs)
                 entropy = policy_dist.entropy().mean().item()
 
-                alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy)
+                alpha_used = alpha
 
                 # CRITIC training
                 with torch.no_grad():
