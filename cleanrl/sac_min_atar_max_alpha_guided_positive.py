@@ -2,7 +2,6 @@
 import os
 import random
 import time
-import math
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -71,20 +70,9 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_start_exploitation: float = 0.50
+    target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    target_entropy_end_exploitation: float = 0.85
     alpha_eps = 2e-2
-
-def target_entropy_from_exploitation_probability(p, n):
-    if p <= 0 or p >= 1:
-        raise ValueError("Exploitation probability p must be in the open interval (0, 1).")
-
-    # Compute the entropy of the distribution.
-    ent = - (p * math.log(p) + (1 - p) * math.log((1 - p) / (n - 1)))
-
-    # Return the SAC-style target entropy (i.e., negative of the computed entropy).
-    return ent
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -250,11 +238,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     # Automatic entropy tuning
     if args.autotune:
-        target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
-                                                                            envs.single_action_space.n)
-        target_entropy_end = target_entropy_from_exploitation_probability(args.target_entropy_end_exploitation,
-                                                                          envs.single_action_space.n)
-        target_entropy = target_entropy_start
+        target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
         a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
@@ -343,15 +327,19 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 entropy = policy_dist.entropy().mean().item()
 
                 alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy)
-
                 # CRITIC training
                 with torch.no_grad():
                     _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                     qf1_next_target = qf1_target(data.next_observations)
                     qf2_next_target = qf2_target(data.next_observations)
+                    q_next = torch.min(qf1_next_target, qf2_next_target)
+                    state_q_next = q_next.mean(dim=1, keepdim=True)
+                    global_min_next = state_q_next.min()
+                    global_max_next = state_q_next.max()
+                    state_weight_next = (state_q_next - global_min_next) / (global_max_next - global_min_next + 1e-6)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target) - alpha_used * next_state_log_pi
+                        q_next - alpha_used * state_weight_next * next_state_log_pi
                     )
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
@@ -375,24 +363,23 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
                     min_qf_values = torch.min(qf1_values, qf2_values)
+                    state_q_current = min_qf_values.mean(dim=1, keepdim=True)  # shape: [B, 1]
+                    global_min_current = state_q_current.min()
+                    global_max_current = state_q_current.max()
+                    state_weight_current = (state_q_current - global_min_current) / (
+                                global_max_current - global_min_current + 1e-6)
+
                 # no need for reparameterization, the expectation can be calculated for discrete actions
-                actor_loss = (action_probs * ((alpha_used * log_pi) - min_qf_values)).mean()
+                actor_loss = (action_probs * ((alpha_used * state_weight_current * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
                 actor_optimizer.step()
 
                 if args.autotune:
-                    progress_ratio = min(global_step / args.total_timesteps, 1.0)
-                    current_target_entropy = target_entropy_start + progress_ratio * (
-                                target_entropy_end - target_entropy_start)
-                    writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
-                    # ----------------------------------
+                    # re-use action probabilities for temperature loss
+                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
 
-                    with torch.no_grad():
-                        log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
-                    alpha_loss = (action_probs.detach() * (
-                                -log_alpha.exp() * (log_pi + current_target_entropy).detach())).mean()
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
                     a_optimizer.step()
