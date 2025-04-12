@@ -45,7 +45,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -273,6 +273,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
         if global_step == 0 or global_step % 500000 == 0:
             eval_mean_qs = []
+            eval_mean_entropies = []
             eval_obs, _ = eval_env.reset(seed=args.seed + 1000)  # reset evaluation env
             done = False
             # Run one full episode in eval mode
@@ -283,7 +284,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     q_values = qf1(torch.Tensor(eval_obs).to(device))
                     # Compute the mean of the Q-values for the state
                     mean_q = q_values.mean(dim=1).item()
+
+                    logits = actor(torch.Tensor(eval_obs).to(device))
+                    policy_dist = Categorical(logits=logits)
+                    entropy_val = policy_dist.entropy().mean().item()
                 eval_mean_qs.append(mean_q)
+                eval_mean_entropies.append(entropy_val)
 
                 # Get action from actor (still stochastic, or modify to get a greedy action if desired)
                 action, _, _ = actor.get_action(torch.Tensor(eval_obs).to(device))
@@ -295,11 +301,22 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             # Plot the mean Q values over the episode
             fig, ax = plt.subplots()
             ax.plot(eval_mean_qs)
+            print(eval_mean_qs)
             ax.set_xlabel("Timestep in Episode")
             ax.set_ylabel("Mean Q Value (qf1)")
             ax.set_title(f"Mean Q Values over Episode (Step {global_step})")
             writer.add_figure("Evaluation/Mean_Q_Plot", fig, global_step)
+
+            fig2, ax2 = plt.subplots()
+            ax2.plot(eval_mean_entropies)
+            print(eval_mean_entropies)
+            ax2.set_xlabel("Timestep in Episode")
+            ax2.set_ylabel("Mean Entropy")
+            ax2.set_title(f"Mean Entropy over Episode (Step {global_step})")
+            writer.add_figure("Evaluation/Mean_Entropy_Plot", fig2, global_step)
+
             plt.close(fig)
+            plt.close(fig2)
 
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
