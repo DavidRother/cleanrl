@@ -43,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -192,7 +192,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     args = tyro.cli(Args)
 
-    # Create one shared TensorBoard writer that will log all runs into the same folder.
     writer = SummaryWriter(f"runs/{args.env_id}__{args.exp_name}")
     # You can also add the hyperparameters text once (they remain common across runs)
     writer.add_text(
@@ -209,7 +208,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # Update the seed for the current run
         current_seed = args.seed + run_idx
         run_prefix = f"seed_{current_seed}"
-        run_name = f"{args.env_id}__{args.exp_name}__{run_prefix}__{int(time.time())}"
+        folder_name = f"{args.env_id}__{args.exp_name}"
+        run_name = f"folder_name__{run_prefix}__{int(time.time())}"
         print(f"Starting run: {run_prefix}")
 
         # (Re)seed randomness for current run
@@ -259,13 +259,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         else:
             alpha = args.alpha
 
-        rb = ReplayBuffer(
-            args.buffer_size,
-            envs.single_observation_space,
-            envs.single_action_space,
-            device,
-            handle_timeout_termination=False,
-        )
+        rb = ReplayBuffer(args.buffer_size, envs.single_observation_space, envs.single_action_space, device,
+                          handle_timeout_termination=False,)
         start_time = time.time()
 
         progress_bar = tqdm.trange(args.total_timesteps, desc=f"Training {run_prefix}", dynamic_ncols=True)
@@ -334,7 +329,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     policy_dist = Categorical(probs=action_probs)
                     entropy = policy_dist.entropy().mean().item()
 
-                    alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + args.alpha_eps) / entropy)
+                    alpha_used = alpha
                     with torch.no_grad():
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
