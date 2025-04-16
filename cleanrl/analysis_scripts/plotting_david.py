@@ -52,25 +52,27 @@ def interpolate_run(steps, returns, eval_steps):
     return eval_steps, interp_fn(eval_steps)
 
 
+env_name = "SpaceInvaders"
 # ====== Configuration ======
 # Update this path to point to your combined event file.
-combined_event_file = "../runs/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0"
-combined_event_file_list = [combined_event_file]
+combined_event_file = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744597453.DESKTOP-3KSSRPS.22956.0"
+combined_event_file2 = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/events.out.tfevents.1744653112.DESKTOP-3KSSRPS.24804.0"
+combined_event_file_list = [combined_event_file, combined_event_file2]
 
-label_list = ["Bounded Alpha"]
+label_list = ["Bounded Alpha", "Standard"]
 
-max_steps = 3_000_000
+max_steps = 3000000
 eval_steps = np.linspace(0, max_steps, num=max_steps // 100)
 smooth_window = 200
-title = "MinAtar Asterix"
+title = f"MinAtar {env_name}"
 
 # Define a list of colors that will be used for different runs.
 colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
 
 # ====== Load the Combined Event File ======
 for run_num, event_file in enumerate(combined_event_file_list):
-    print("Loading event file:", combined_event_file)
-    event_acc = EventAccumulator(combined_event_file)
+    print("Loading event file:", event_file)
+    event_acc = EventAccumulator(event_file)
     event_acc.Reload()
 
     # Get all scalar tags from the event file.
