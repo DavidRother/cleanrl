@@ -52,11 +52,11 @@ def interpolate_run(steps, returns, eval_steps):
     return eval_steps, interp_fn(eval_steps)
 
 
-env_name = "SpaceInvaders"
+env_name = "Asterix"
 # ====== Configuration ======
 # Update this path to point to your combined event file.
-combined_event_file = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744597453.DESKTOP-3KSSRPS.22956.0"
-combined_event_file2 = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/events.out.tfevents.1744653112.DESKTOP-3KSSRPS.24804.0"
+combined_event_file = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0"
+combined_event_file2 = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/events.out.tfevents.1744718691.cmp2004-04.1574730.0"
 combined_event_file_list = [combined_event_file, combined_event_file2]
 
 label_list = ["Bounded Alpha", "Standard"]
@@ -123,4 +123,12 @@ plt.ylabel("Episodic Return")
 plt.title(title)
 plt.legend(loc="upper left", prop={"size": 10}, facecolor="white", fancybox=True)
 plt.grid(True)
+
+# Save the plot with environment name
+output_dir = "../graphs"
+os.makedirs(output_dir, exist_ok=True)
+plot_filename = os.path.join(output_dir, f"{env_name}_performance_plot.png")
+plt.savefig(plot_filename, bbox_inches="tight", dpi=300)
+print(f"Plot saved as: {plot_filename}")
+
 plt.show()
