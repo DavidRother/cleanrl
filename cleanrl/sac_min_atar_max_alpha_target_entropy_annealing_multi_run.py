@@ -336,8 +336,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
             # Process replay buffer
             real_next_obs = next_obs.copy()
-            for idx, trunc in enumerate(truncations):
-                if trunc:
+            for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
+                if trunc or term:
                     real_next_obs[idx] = infos["final_observation"][idx]
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
             obs = next_obs
