@@ -1,47 +1,29 @@
 import os
+import glob
 from scipy.interpolate import interp1d
 import numpy as np
 import matplotlib.pyplot as plt
-
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
-
 def bootstrap_ci_vectorized(S, B=1000, alpha=0.05):
-    """
-    Compute the mean and bootstrapped confidence intervals in a vectorized way.
-
-    Parameters:
-        S (np.ndarray): Score matrix of shape (N, T) with returns.
-        B (int): Number of bootstrap resamples.
-        alpha (float): Significance level (default: 0.05 for 95% CI).
-
-    Returns:
-        mean (np.ndarray): Mean for each timestep.
-        ci_lower (np.ndarray): Lower bound of the confidence interval.
-        ci_upper (np.ndarray): Upper bound of the confidence interval.
-    """
     N, T = S.shape
     mean = np.mean(S, axis=0)
-    # Bootstrap resampling independently per timestep.
     indices = np.random.randint(0, N, size=(B, N, T))
     boot_samples = S[indices, np.arange(T)]
     boot_means = np.mean(boot_samples, axis=1)
-    ci_lower, ci_upper = np.percentile(boot_means, [100 * alpha / 2, 100 * (1 - alpha / 2)], axis=0)
+    ci_lower, ci_upper = np.percentile(
+        boot_means,
+        [100 * alpha / 2, 100 * (1 - alpha / 2)],
+        axis=0
+    )
     return mean, ci_lower, ci_upper
 
-
 def smooth(x, weight):
-    """
-    Smooth data with a moving window average.
-    """
     y = np.ones(weight)
     z = np.ones(len(x))
-    smoothed = np.convolve(x, y, "same") / np.convolve(z, y, "same")
-    return smoothed
-
+    return np.convolve(x, y, "same") / np.convolve(z, y, "same")
 
 def interpolate_run(steps, returns, eval_steps):
-    # Create an interpolation function using previous values.
     interp_fn = interp1d(
         steps,
         returns,
@@ -51,15 +33,36 @@ def interpolate_run(steps, returns, eval_steps):
     )
     return eval_steps, interp_fn(eval_steps)
 
+env_name = "SpaceInvaders"
 
-env_name = "Asterix"
-# ====== Configuration ======
-# Update this path to point to your combined event file.
-combined_event_file = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0"
-combined_event_file2 = f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/events.out.tfevents.1744718691.cmp2004-04.1574730.0"
-combined_event_file_list = [combined_event_file, combined_event_file2]
+# ====== User-provided run directories ======
+combined_run_dirs = [
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_target_entropy_annealing_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_v2_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run/"
+]
 
-label_list = ["Bounded Alpha", "Standard"]
+# ====== Discover the actual event file in each directory ======
+combined_event_file_list = []
+label_list = []
+for run_dir in combined_run_dirs:
+    tf_files = glob.glob(os.path.join(run_dir, "events.out.tfevents*"))
+    if not tf_files:
+        raise FileNotFoundError(f"No event file found in {run_dir}")
+    # pick the most recently modified .tfevents file
+    latest = max(tf_files, key=os.path.getmtime)
+    combined_event_file_list.append(latest)
+
+    # derive a label from the folder name, e.g. "sac_min_atar_max_alpha_multi_run"
+    base = os.path.basename(os.path.normpath(run_dir))
+    label = base.split("__", 1)[1].replace("_", " ").title()
+    label_list.append(label)
+
+print("Using these event files:")
+for lbl, path in zip(label_list, combined_event_file_list):
+    print(f"  {lbl}: {path}")
 
 max_steps = 3000000
 eval_steps = np.linspace(0, max_steps, num=max_steps // 100)
