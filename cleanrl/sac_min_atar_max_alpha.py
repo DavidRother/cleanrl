@@ -309,8 +309,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
+        for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
+            if trunc or term:
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
@@ -366,6 +366,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 actor_optimizer.step()
 
                 if args.autotune:
+                    with torch.no_grad():
+                        log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
                     # re-use action probabilities for temperature loss
                     alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
 
