@@ -1,6 +1,6 @@
 slurm
 .aim
-runs
+cleanrl/runs_old
 balance_bot.xml
 cleanrl/ppo_continuous_action_isaacgym/isaacgym/examples
 cleanrl/ppo_continuous_action_isaacgym/isaacgym/isaacgym
@@ -129,3 +129,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+/cleanrl/runs_old/
+/cleanrl/runs/
+.idea/

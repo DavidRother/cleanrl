@@ -54,9 +54,9 @@ def split_event_file(input_event_file: str, output_directory: str):
 
 if __name__ == "__main__":
     # Path to the combined tensorboard event file (old file with 5 runs)
-    combined_event_file = "../runs/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0"  # <-- update this path
+    combined_event_file = "../runs_old/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0"  # <-- update this path
     # Output directory where separate run folders will be created.
-    output_dir = "../runs/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run"
+    output_dir = "../runs_old/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run"
 
     split_event_file(combined_event_file, output_dir)
     print("Splitting complete!")

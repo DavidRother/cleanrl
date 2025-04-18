@@ -218,7 +218,7 @@ def compute_loss_on_dataset(model, dataset):
 # -------------------------------
 def main():
 
-    model_path = "../runs/MinAtar/SpaceInvaders-v1__sac_min_atar_max_alpha_multi_run/final_model_seed_123456.pt"
+    model_path = "../runs_old/MinAtar/SpaceInvaders-v1__sac_min_atar_max_alpha_multi_run/final_model_seed_123456.pt"
 
     episodes = 10
 
