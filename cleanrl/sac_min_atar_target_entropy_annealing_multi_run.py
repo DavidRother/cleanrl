@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/SpaceInvaders-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -206,7 +206,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     args = tyro.cli(Args)
 
     # Create one shared TensorBoard writer that will log all runs into the same folder.
-    writer = SummaryWriter(f"runs_old/{args.env_id}__{args.exp_name}")
+    writer = SummaryWriter(f"runs/{args.env_id}__{args.exp_name}")
     # You can also add the hyperparameters text once (they remain common across runs)
     writer.add_text(
         "global_hyperparameters",

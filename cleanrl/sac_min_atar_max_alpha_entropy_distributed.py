@@ -207,7 +207,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs_temporary/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -336,7 +336,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     q_min = torch.min(qf1_next_target, qf2_next_target)
                     abs_q = q_min.abs()
                     per_state_sum = abs_q.sum(1, keepdim=True) + 1e-8
-                    dyn_alpha = per_state_sum * alpha_used * per_state_sum.shape[0] / per_state_sum.sum()
+                    dyn_alpha = (per_state_sum / torch.max(per_state_sum)) * alpha_used
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
                         q_min - dyn_alpha * next_state_log_pi
