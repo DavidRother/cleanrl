@@ -155,7 +155,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs_old/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -288,7 +288,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 )
 
     if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+        model_path = f"runs_old/{run_name}/{args.exp_name}.cleanrl_model"
         torch.save((actor.state_dict(), qf1.state_dict(), qf2.state_dict()), model_path)
         print(f"model saved to {model_path}")
         from cleanrl_utils.evals.td3_eval import evaluate
@@ -316,7 +316,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 episodic_returns,
                 repo_id,
                 "TD3",
-                f"runs/{run_name}",
+                f"runs_old/{run_name}",
                 f"videos/{run_name}-eval",
             )
 
