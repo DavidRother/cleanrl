@@ -32,12 +32,15 @@ def interpolate_run(steps, returns, eval_steps):
     return eval_steps, interp_fn(eval_steps)
 
 # ---- your environments ----
-env_names = ["Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders"]
+env_names = ["Asterix", "Breakout", "Freeway", "Seaquest"]
 
 # ---- for each env, the two run‐dirs to search ----
 run_dirs_super_list = [
     [
         f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_multi_run",
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run",
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_target_entropy_annealing_multi_run",
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_distributed_multi_run",
         f"../runs/MinAtar/{env}-v1__sac_min_atar_multi_run",
     ]
     for env in env_names
@@ -58,12 +61,13 @@ os.makedirs(output_dir, exist_ok=True)
 # ---- main loop ----
 for env_name, run_dirs in zip(env_names, run_dirs_super_list):
     for new_tag in tag_list:
-        label_list = ["Bounded Alpha", "Standard"]
+        label_list = ["Bounded Alpha", "Bounded Alpha Target Entropy Annealing", "Target Entropy Annealing",
+                      "Bounded Alpha Distributed Entropy", "Baseline"]
         max_steps = 3_000_000
         eval_steps = np.linspace(0, max_steps, num=max_steps // 100)
         smooth_window = 200
         title = f"MinAtar {env_name} – {new_tag}"
-        colors = ["#007D81", "#6a6a6a"]
+        colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
 
         plt.figure()
 
@@ -74,12 +78,12 @@ for env_name, run_dirs in zip(env_names, run_dirs_super_list):
             if not tf_paths:
                 raise FileNotFoundError(f"No event file found in {run_dir}")
             latest = max(tf_paths, key=os.path.getmtime)
-            event_files.append(latest)
+            acc = EventAccumulator(latest)
+            acc.Reload()
+            event_files.append(acc)
 
         for run_num, event_file in enumerate(event_files):
-            print(f"[{env_name}][{new_tag}] loading {os.path.basename(event_file)}")
-            acc = EventAccumulator(event_file)
-            acc.Reload()
+            print(f"loading [{env_name}][{new_tag}]")
 
             scalars = acc.Tags().get("scalars", [])
             all_vals = []
