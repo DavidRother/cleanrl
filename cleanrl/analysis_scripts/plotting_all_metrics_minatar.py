@@ -1,10 +1,9 @@
 import os
+import glob
 from scipy.interpolate import interp1d
 import numpy as np
 import matplotlib.pyplot as plt
-
 from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
-
 
 def bootstrap_ci_vectorized(S, B=1000, alpha=0.05):
     N, T = S.shape
@@ -17,13 +16,10 @@ def bootstrap_ci_vectorized(S, B=1000, alpha=0.05):
     )
     return mean, ci_lower, ci_upper
 
-
 def smooth(x, weight):
     y = np.ones(weight)
     z = np.ones(len(x))
-    smoothed = np.convolve(x, y, "same") / np.convolve(z, y, "same")
-    return smoothed
-
+    return np.convolve(x, y, "same") / np.convolve(z, y, "same")
 
 def interpolate_run(steps, returns, eval_steps):
     interp_fn = interp1d(
@@ -35,29 +31,16 @@ def interpolate_run(steps, returns, eval_steps):
     )
     return eval_steps, interp_fn(eval_steps)
 
-
+# ---- your environments ----
 env_names = ["Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders"]
-event_file_super_list = [
+
+# ---- for each env, the two run‐dirs to search ----
+run_dirs_super_list = [
     [
-        "../runs/MinAtar/Asterix-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744396844.DESKTOP-3KSSRPS.25828.0",
-        "../runs/MinAtar/Asterix-v1__sac_min_atar_multi_run/events.out.tfevents.1744718691.cmp2004-04.1574730.0",
-    ],
-    [
-        "../runs/MinAtar/Breakout-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744541464.DESKTOP-3KSSRPS.18308.0",
-        "../runs/MinAtar/Breakout-v1__sac_min_atar_multi_run/events.out.tfevents.1744719793.cmp2004-05.1124806.0",
-    ],
-    [
-        "../runs/MinAtar/Freeway-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744613275.Lappi.9336.0",
-        "../runs/MinAtar/Freeway-v1__sac_min_atar_multi_run/events.out.tfevents.1744718443.cmp2004-03.3938368.0",
-    ],
-    [
-        "../runs/MinAtar/Seaquest-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744650887.Lappi.7480.0",
-        "../runs/MinAtar/Seaquest-v1__sac_min_atar_multi_run/events.out.tfevents.1744718154.cmp2004-02.416801.0",
-    ],
-    [
-        "../runs/MinAtar/SpaceInvaders-v1__sac_min_atar_max_alpha_multi_run/events.out.tfevents.1744597453.DESKTOP-3KSSRPS.22956.0",
-        "../runs/MinAtar/SpaceInvaders-v1__sac_min_atar_multi_run/events.out.tfevents.1744653112.DESKTOP-3KSSRPS.24804.0",
-    ],
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_multi_run",
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_multi_run",
+    ]
+    for env in env_names
 ]
 
 tag_list = ["episodic_return", "qf_loss", "qf1_values", "alpha_used", "mean_policy_entropy"]
@@ -72,44 +55,54 @@ y_labels = {
 output_dir = "../graphs"
 os.makedirs(output_dir, exist_ok=True)
 
-for env_name, combined_event_file_list in zip(env_names, event_file_super_list):
+# ---- main loop ----
+for env_name, run_dirs in zip(env_names, run_dirs_super_list):
     for new_tag in tag_list:
         label_list = ["Bounded Alpha", "Standard"]
-        max_steps = 3000000
+        max_steps = 3_000_000
         eval_steps = np.linspace(0, max_steps, num=max_steps // 100)
         smooth_window = 200
-        title = f"MinAtar {env_name} - {new_tag}"
-
+        title = f"MinAtar {env_name} – {new_tag}"
         colors = ["#007D81", "#6a6a6a"]
 
         plt.figure()
 
-        for run_num, event_file in enumerate(combined_event_file_list):
-            event_acc = EventAccumulator(event_file)
-            event_acc.Reload()
+        # find the two most‐recent event files, one per run-dir
+        event_files = []
+        for run_dir in run_dirs:
+            tf_paths = glob.glob(os.path.join(run_dir, "events.out.tfevents*"))
+            if not tf_paths:
+                raise FileNotFoundError(f"No event file found in {run_dir}")
+            latest = max(tf_paths, key=os.path.getmtime)
+            event_files.append(latest)
 
-            all_scalar_tags = event_acc.Tags().get("scalars", [])
+        for run_num, event_file in enumerate(event_files):
+            print(f"[{env_name}][{new_tag}] loading {os.path.basename(event_file)}")
+            acc = EventAccumulator(event_file)
+            acc.Reload()
 
-            all_returns = []
-            for tag in all_scalar_tags:
-                if new_tag == tag.split("/")[-1]:
-                    events = event_acc.Scalars(tag)
-                    steps = [e.step for e in events]
-                    returns = [e.value for e in events]
-                    interp_steps, interp_returns = interpolate_run(steps, returns, eval_steps)
-                    interp_returns = smooth(interp_returns, smooth_window)
-                    all_returns.append(interp_returns)
+            scalars = acc.Tags().get("scalars", [])
+            all_vals = []
+            for tag in scalars:
+                if tag.split("/")[-1] == new_tag:
+                    evts = acc.Scalars(tag)
+                    steps  = [e.step for e in evts]
+                    values = [e.value for e in evts]
+                    _, interp_vals = interpolate_run(steps, values, eval_steps)
+                    all_vals.append(smooth(interp_vals, smooth_window))
 
-            if not all_returns:
+            if not all_vals:
+                # no data for this tag/run
                 continue
 
-            mean, lower, higher = bootstrap_ci_vectorized(np.asarray(all_returns))
+            mean, lo, hi = bootstrap_ci_vectorized(np.array(all_vals))
             mean = smooth(mean, smooth_window)
-            lower = smooth(lower, smooth_window)
-            higher = smooth(higher, smooth_window)
+            lo   = smooth(lo,   smooth_window)
+            hi   = smooth(hi,   smooth_window)
 
-            plt.fill_between(interp_steps, lower, higher, alpha=0.2, facecolor=colors[run_num])
-            plt.plot(interp_steps, mean, linewidth=2.5, color=colors[run_num], label=label_list[run_num])
+            plt.fill_between(eval_steps, lo, hi, alpha=0.2, facecolor=colors[run_num])
+            plt.plot(eval_steps, mean, linewidth=2.5, color=colors[run_num],
+                     label=label_list[run_num])
 
         plt.xlabel("Environment Steps")
         plt.ylabel(y_labels.get(new_tag, new_tag))
@@ -117,7 +110,7 @@ for env_name, combined_event_file_list in zip(env_names, event_file_super_list):
         plt.legend(loc="upper left", prop={"size": 10}, facecolor="white", fancybox=True)
         plt.grid(True)
 
-        plot_filename = os.path.join(output_dir, f"{env_name}_{new_tag}_plot.png")
-        plt.savefig(plot_filename, bbox_inches="tight", dpi=300)
+        out_path = os.path.join(output_dir, f"{env_name}_{new_tag}_plot.png")
+        plt.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close()
-        print(f"Plot saved as: {plot_filename}")
+        print(f"→ Plot saved: {out_path}")
