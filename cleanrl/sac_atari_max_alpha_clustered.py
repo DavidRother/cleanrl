@@ -224,7 +224,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("mps")
+    device = torch.device("cuda")
 
     # env setup
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
@@ -305,8 +305,15 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     for label in set(clustering.labels_):
                         clusters[label] = [returns_per_step[index] for index in range(len(returns_per_step)) if clustering.labels_[index] == label]
                     
-                    avg_return = np.array(np.max([np.mean(clusters[label]) for label in clustering.labels_ if label != -1]))
+                    proper_clusters = [clusters[label] for label in set(clustering.labels_) if label != -1]
+                    cluster_means = [np.mean(cluster) for cluster in proper_clusters]
+                    avg_return = np.array(np.max(cluster_means))
                     writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
+                    writer.add_scalar("charts/mean_return_per_step", np.mean(returns_per_step), global_step)
+                    writer.add_scalar("charts/absolute_difference_clustered_method", np.abs(avg_return - np.mean(returns_per_step)), global_step)
+                    writer.add_scalar("charts/number_of_clusters", len(proper_clusters), global_step)
+                    writer.add_scalar("charts/selected_cluster_size", len(proper_clusters[np.argmax(cluster_means)]), global_step)
+                    writer.add_scalar("charts/selected_cluster_relative_size", len(proper_clusters[np.argmax(cluster_means)]) / 50, global_step)
                 else:
                     avg_return = np.array(np.mean(returns_per_step))
                     writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
@@ -333,7 +340,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.update_frequency == 0:
-                alpha_used = min(alpha, torch.as_tensor(np.float32(avg_return_normalised), device=device) + alpha_eps)
+                alpha_used = min(alpha, torch.as_tensor(avg_return_normalised, device=device) + alpha_eps)
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
