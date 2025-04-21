@@ -80,6 +80,23 @@ class Args:
     alpha_eps = 2e-2
 
 
+class ChannelFirstWrapper(gym.ObservationWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        obs_shape = self.observation_space.shape
+        assert len(obs_shape) == 3, "Expected 3D observation (H, W, C)"
+        c, h, w = obs_shape[2], obs_shape[0], obs_shape[1]
+        self.observation_space = gym.spaces.Box(
+            low=0.0,
+            high=1.0,
+            shape=(c, h, w),
+            dtype=self.observation_space.dtype
+        )
+
+    def observation(self, observation: np.ndarray) -> np.ndarray:
+        return np.transpose(observation, (2, 0, 1))
+
+
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
@@ -88,16 +105,16 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-
-        env = NoopResetEnv(env, noop_max=30)
-        env = MaxAndSkipEnv(env, skip=4)
-        env = EpisodicLifeEnv(env)
-        if "FIRE" in env.unwrapped.get_action_meanings():
-            env = FireResetEnv(env)
+        env = ChannelFirstWrapper(env)
+        # env = NoopResetEnv(env, noop_max=30)
+        # env = MaxAndSkipEnv(env, skip=4)
+        # env = EpisodicLifeEnv(env)
+        # if "FIRE" in env.unwrapped.get_action_meanings():
+        #     env = FireResetEnv(env)
         env = ClipRewardEnv(env)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayScaleObservation(env)
-        env = gym.wrappers.FrameStack(env, 4)
+        # env = gym.wrappers.ResizeObservation(env, (84, 84))
+        # env = gym.wrappers.GrayScaleObservation(env)
+        # env = gym.wrappers.FrameStack(env, 4)
 
         env.action_space.seed(seed)
         return env
@@ -120,22 +137,19 @@ class SoftQNetwork(nn.Module):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
+            layer_init(nn.Conv2d(obs_shape[0], 16, kernel_size=3, stride=1)),
             nn.Flatten(),
         )
 
         with torch.inference_mode():
             output_dim = self.conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 512))
-        self.fc_q = layer_init(nn.Linear(512, envs.single_action_space.n))
+        self.fc1 = layer_init(nn.Linear(output_dim, 128))
+        self.fc_q = layer_init(nn.Linear(128, envs.single_action_space.n))
 
     def forward(self, x):
-        x = F.relu(self.conv(x / 255.0))
+        x = torch.as_tensor(x, dtype=torch.float32, device=device)
+        x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         q_vals = self.fc_q(x)
         return q_vals
@@ -146,21 +160,18 @@ class Actor(nn.Module):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
-            layer_init(nn.Conv2d(obs_shape[0], 32, kernel_size=8, stride=4)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(32, 64, kernel_size=4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(64, 64, kernel_size=3, stride=1)),
+            layer_init(nn.Conv2d(obs_shape[0], 16, kernel_size=3, stride=1)),
             nn.Flatten(),
         )
 
         with torch.inference_mode():
             output_dim = self.conv(torch.zeros(1, *obs_shape)).shape[1]
 
-        self.fc1 = layer_init(nn.Linear(output_dim, 512))
-        self.fc_logits = layer_init(nn.Linear(512, envs.single_action_space.n))
+        self.fc1 = layer_init(nn.Linear(output_dim, 128))
+        self.fc_logits = layer_init(nn.Linear(128, envs.single_action_space.n))
 
     def forward(self, x):
+        x = torch.as_tensor(x, dtype=torch.float32, device=device)
         x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         logits = self.fc_logits(x)
@@ -168,7 +179,7 @@ class Actor(nn.Module):
         return logits
 
     def get_action(self, x):
-        logits = self(x / 255.0)
+        logits = self(x)
         policy_dist = Categorical(logits=logits)
         action = policy_dist.sample()
         # Action probabilities for calculating the adapted soft-Q loss
@@ -213,7 +224,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     torch.manual_seed(args.seed)
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps")
 
     # env setup
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
@@ -294,10 +305,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     for label in set(clustering.labels_):
                         clusters[label] = [returns_per_step[index] for index in range(len(returns_per_step)) if clustering.labels_[index] == label]
                     
-                    avg_return = np.max(np.mean(clusters[label]) for label in clustering.labels_ if label != -1)
+                    avg_return = np.array(np.max([np.mean(clusters[label]) for label in clustering.labels_ if label != -1]))
                     writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
                 else:
-                    avg_return = np.mean(returns_per_step)
+                    avg_return = np.array(np.mean(returns_per_step))
                     writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
 
                 if returns_per_step[-1] < lowest_return:
@@ -322,7 +333,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.update_frequency == 0:
-                alpha_used = min(alpha, torch.as_tensor(avg_return_normalised, device=device) + alpha_eps)
+                alpha_used = min(alpha, torch.as_tensor(np.float32(avg_return_normalised), device=device) + alpha_eps)
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
