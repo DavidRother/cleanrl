@@ -323,7 +323,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     avg_return_normalised = np.float32((highest_return - lowest_return) / best_ep_length)
                     adjusted_metric = avg_return_normalised - alpha
-                    writer.add_scalar("charts/mean_return_per_step", np.mean(returns_per_step), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_return_per_step", np.mean(returns_per_step), global_step)
                     writer.add_scalar(f"{run_prefix}/charts/episodic_return_adjusted", adjusted_metric, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/alpha_upper_bound", avg_return_normalised + args.alpha_eps, global_step)
                     break
