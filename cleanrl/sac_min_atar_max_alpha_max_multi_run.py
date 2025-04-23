@@ -43,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -274,6 +274,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         episodic_lengths = []
         returns_per_step = []
         avg_return_normalised = alpha
+        buffer_size = args.buffer_size
 
         lowest_return = np.inf
         highest_return = -10000000
@@ -305,14 +306,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     episode_returns.append(episodic_return)
                     episodic_lengths.append(episodic_length)
-                    if len(episode_returns) > 50:
+                    if len(episode_returns) > buffer_size:
                         episode_returns.pop(0)
                         episodic_lengths.pop(0)
                     avg_return = np.mean(episode_returns)
                     returns_per_step.append(episodic_return[0] / episodic_length[0])
                     writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
 
-                    if len(returns_per_step) > 50:
+                    if len(returns_per_step) > buffer_size:
                         returns_per_step.pop(0)
                     if episodic_return < lowest_return:
                         lowest_return = episodic_return
