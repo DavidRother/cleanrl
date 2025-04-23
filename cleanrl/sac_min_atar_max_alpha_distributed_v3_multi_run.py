@@ -43,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Seaquest-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -370,6 +370,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     actor_optimizer.step()
 
                     if args.autotune:
+                        with torch.no_grad():
+                            log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
                         alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
                         a_optimizer.zero_grad()
                         alpha_loss.backward()
