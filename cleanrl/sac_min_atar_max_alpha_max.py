@@ -72,7 +72,7 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    alpha_eps = 2e-2
+    alpha_eps = 1e-6
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -259,9 +259,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     episode_returns = []
     episodic_lengths = []
     avg_return_normalised = alpha
-    buffer_size = args.buffer_size
 
     lowest_return = np.inf
+    highest_return = -10000000
 
     alpha_eps = args.alpha_eps
 
@@ -293,7 +293,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 # Track the average episodic return over the last 50 episodes
                 episode_returns.append(episodic_return)
                 episodic_lengths.append(episodic_length)
-                if sum(episodic_lengths) > buffer_size:
+                if len(episode_returns) > 50:
                     episode_returns.pop(0)
                     episodic_lengths.pop(0)
                 avg_return = np.mean(episode_returns)
@@ -302,7 +302,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 if episodic_return < lowest_return:
                     lowest_return = episodic_return
 
-                avg_return_normalised = (avg_return - lowest_return) / np.mean(episodic_lengths)
+                if episodic_return > highest_return:
+                    highest_return = episodic_return
+
+                avg_return_normalised = (highest_return - lowest_return) / np.mean(episodic_lengths)
                 adjusted_metric = avg_return_normalised - alpha
                 writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
                 writer.add_scalar("charts/alpha_upper_bound", avg_return_normalised + alpha_eps, global_step)

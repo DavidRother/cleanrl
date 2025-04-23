@@ -11,7 +11,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 import tqdm
-import math
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -44,7 +43,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Seaquest-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -68,24 +67,12 @@ class Args:
     """the frequency of updates for the target networks"""
     alpha: float = 0.2
     """Entropy regularization coefficient."""
-    autotune: bool = True
+    autotune: bool = False
     """automatic tuning of the entropy coefficient"""
-    target_entropy_start_exploitation: float = 0.50
+    target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    target_entropy_end_exploitation: float = 0.80
     alpha_eps: float = 2e-2
     """a small epsilon added for adjusting metrics"""
-
-
-def target_entropy_from_exploitation_probability(p, n):
-    if p <= 0 or p >= 1:
-        raise ValueError("Exploitation probability p must be in the open interval (0, 1).")
-
-    # Compute the entropy of the distribution.
-    ent = - (p * math.log(p) + (1 - p) * math.log((1 - p) / (n - 1)))
-
-    # Return the SAC-style target entropy (i.e., negative of the computed entropy).
-    return ent
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -265,11 +252,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
         # Automatic entropy tuning
         if args.autotune:
-            target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
-                                                                                envs.single_action_space.n)
-            target_entropy_end = target_entropy_from_exploitation_probability(args.target_entropy_end_exploitation,
-                                                                              envs.single_action_space.n)
-            target_entropy = target_entropy_start
+            target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
             log_alpha = torch.zeros(1, requires_grad=True, device=device)
             alpha = log_alpha.exp().item()
             a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
@@ -351,13 +334,18 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     policy_dist = Categorical(probs=action_probs)
                     entropy = policy_dist.entropy().mean().item()
 
-                    alpha_used = alpha
+                    alpha_used = (torch.as_tensor(avg_return_normalised, device=device) + args.alpha_eps) / entropy
                     with torch.no_grad():
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
                         qf2_next_target = qf2_target(data.next_observations)
+                        q_min = torch.min(qf1_next_target, qf2_next_target)
+                        abs_q = q_min.abs()
+                        per_state_sum = abs_q.sum(1, keepdim=True) + 1e-8
+                        dyn_alpha = per_state_sum * alpha_used * per_state_sum.shape[0] / per_state_sum.sum()
+                        # we can use the action probabilities instead of MC sampling to estimate the expectation
                         min_qf_next_target = next_state_action_probs * (
-                            torch.min(qf1_next_target, qf2_next_target) - alpha_used * next_state_log_pi
+                                q_min - dyn_alpha * next_state_log_pi
                         )
                         min_qf_next_target = min_qf_next_target.sum(dim=1)
                         next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
@@ -385,15 +373,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     actor_optimizer.step()
 
                     if args.autotune:
-                        progress_ratio = min(global_step / args.total_timesteps, 1.0)
-                        current_target_entropy = target_entropy_start + progress_ratio * (
-                                target_entropy_end - target_entropy_start)
-                        writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
-
-                        with torch.no_grad():
-                            log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
-
-                        alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + current_target_entropy).detach())).mean()
+                        alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
                         a_optimizer.zero_grad()
                         alpha_loss.backward()
                         a_optimizer.step()

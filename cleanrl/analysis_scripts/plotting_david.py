@@ -18,10 +18,12 @@ def bootstrap_ci_vectorized(S, B=1000, alpha=0.05):
     )
     return mean, ci_lower, ci_upper
 
+
 def smooth(x, weight):
     y = np.ones(weight)
     z = np.ones(len(x))
     return np.convolve(x, y, "same") / np.convolve(z, y, "same")
+
 
 def interpolate_run(steps, returns, eval_steps):
     interp_fn = interp1d(
@@ -33,15 +35,17 @@ def interpolate_run(steps, returns, eval_steps):
     )
     return eval_steps, interp_fn(eval_steps)
 
-env_name = "SpaceInvaders"
+
+env_name = "Freeway"
 
 # ====== User-provided run directories ======
 combined_run_dirs = [
     f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_multi_run/",
     f"../runs/MinAtar/{env_name}-v1__sac_min_atar_multi_run/",
     f"../runs/MinAtar/{env_name}-v1__sac_min_atar_target_entropy_annealing_multi_run/",
-    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_v2_multi_run/",
-    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run/"
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_distributed_multi_run/",
+    f"../runs/MinAtar/{env_name}-v1__sac_min_atar_max_alpha_distributed_target_entropy_annealing_multi_run/"
 ]
 
 # ====== Discover the actual event file in each directory ======
