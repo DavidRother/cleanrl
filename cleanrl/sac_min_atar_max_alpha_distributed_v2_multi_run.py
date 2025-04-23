@@ -205,7 +205,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # Outer loop: run training 5 times with different seeds.
-    for run_idx in range(2):
+    for run_idx in range(5):
         # Update the seed for the current run
         current_seed = args.seed + run_idx
         run_prefix = f"seed_{current_seed}"
