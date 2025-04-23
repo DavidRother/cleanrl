@@ -132,3 +132,6 @@ venv.bak/
 /cleanrl/runs_old/
 /cleanrl/runs/
 .idea/
+/cleanrl/runs_minatar_trial/
+/cleanrl/runs_temp/
+/cleanrl/runs_temporary/

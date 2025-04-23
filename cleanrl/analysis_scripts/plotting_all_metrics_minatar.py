@@ -32,16 +32,15 @@ def interpolate_run(steps, returns, eval_steps):
     return eval_steps, interp_fn(eval_steps)
 
 # ---- your environments ----
-env_names = ["Asterix", "Breakout", "Freeway", "Seaquest"]
+env_names = ["Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders"]
 
-# ---- for each env, the two run‐dirs to search ----
+# ---- for each env, the run‐dirs to search ----
 run_dirs_super_list = [
     [
         f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_multi_run",
         f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run",
-        f"../runs/MinAtar/{env}-v1__sac_min_atar_target_entropy_annealing_multi_run",
-        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_distributed_multi_run",
         f"../runs/MinAtar/{env}-v1__sac_min_atar_multi_run",
+        f"../runs/MinAtar/{env}-v1__sac_min_atar_target_entropy_annealing_multi_run",
     ]
     for env in env_names
 ]
@@ -60,34 +59,54 @@ os.makedirs(output_dir, exist_ok=True)
 
 # ---- main loop ----
 for env_name, run_dirs in zip(env_names, run_dirs_super_list):
+    # --- 1) Preload all event accumulators once, and build labels from the dir names
+    accumulators = []
+    label_list   = []
+    for run_dir in run_dirs:
+        # find latest event file
+        tf_paths = glob.glob(os.path.join(run_dir, "events.out.tfevents*"))
+        if not tf_paths:
+            raise FileNotFoundError(f"No event file found in {run_dir}")
+        latest = max(tf_paths, key=os.path.getmtime)
+
+        # load it once
+        acc = EventAccumulator(latest)
+        acc.Reload()
+        accumulators.append(acc)
+
+        # build a clean label
+        base = os.path.basename(run_dir)
+        # drop everything up through __, and strip the "_multi_run" suffix
+        raw  = base.split("__", 1)[-1]
+        if raw.endswith("_multi_run"):
+            raw = raw[: -len("_multi_run")]
+        # drop the common prefix
+        prefix = "sac_min_atar_"
+        if raw.startswith(prefix):
+            raw = raw[len(prefix) :]
+        # if nothing left, call it "Standard"
+        label = raw.replace("_", " ").title() if raw else "Standard"
+        label_list.append(label)
+
+    # shared plotting parameters
+    max_steps    = 3_000_000
+    eval_steps   = np.linspace(0, max_steps, num=max_steps // 100)
+    smooth_window = 200
+    colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+
+    # ---- now loop over tags, reusing those loaded accumulators ----
     for new_tag in tag_list:
-        label_list = ["Bounded Alpha", "Bounded Alpha Target Entropy Annealing", "Target Entropy Annealing",
-                      "Bounded Alpha Distributed Entropy", "Baseline"]
-        max_steps = 3_000_000
-        eval_steps = np.linspace(0, max_steps, num=max_steps // 100)
-        smooth_window = 200
-        title = f"MinAtar {env_name} – {new_tag}"
-        colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+        plt.figure(figsize=(8, 5))
+        plt.title(f"MinAtar {env_name} – {new_tag}")
+        plt.xlabel("Environment Steps")
+        plt.ylabel(y_labels.get(new_tag, new_tag))
+        plt.grid(True)
 
-        plt.figure()
-
-        # find the two most‐recent event files, one per run-dir
-        event_files = []
-        for run_dir in run_dirs:
-            tf_paths = glob.glob(os.path.join(run_dir, "events.out.tfevents*"))
-            if not tf_paths:
-                raise FileNotFoundError(f"No event file found in {run_dir}")
-            latest = max(tf_paths, key=os.path.getmtime)
-            acc = EventAccumulator(latest)
-            acc.Reload()
-            event_files.append(acc)
-
-        for run_num, event_file in enumerate(event_files):
-            print(f"loading [{env_name}][{new_tag}]")
-
-            scalars = acc.Tags().get("scalars", [])
+        for run_idx, acc in enumerate(accumulators):
+            # pull out all scalar tags
+            scalar_tags = acc.Tags().get("scalars", [])
             all_vals = []
-            for tag in scalars:
+            for tag in scalar_tags:
                 if tag.split("/")[-1] == new_tag:
                     evts = acc.Scalars(tag)
                     steps  = [e.step for e in evts]
@@ -96,25 +115,22 @@ for env_name, run_dirs in zip(env_names, run_dirs_super_list):
                     all_vals.append(smooth(interp_vals, smooth_window))
 
             if not all_vals:
-                # no data for this tag/run
+                # nothing for this tag in this run
                 continue
 
+            # bootstrap CIs
             mean, lo, hi = bootstrap_ci_vectorized(np.array(all_vals))
             mean = smooth(mean, smooth_window)
             lo   = smooth(lo,   smooth_window)
             hi   = smooth(hi,   smooth_window)
 
-            plt.fill_between(eval_steps, lo, hi, alpha=0.2, facecolor=colors[run_num])
-            plt.plot(eval_steps, mean, linewidth=2.5, color=colors[run_num],
-                     label=label_list[run_num])
+            plt.fill_between(eval_steps, lo, hi,
+                             alpha=0.2, facecolor=colors[run_idx])
+            plt.plot(eval_steps, mean, linewidth=2.5,
+                     color=colors[run_idx], label=label_list[run_idx])
 
-        plt.xlabel("Environment Steps")
-        plt.ylabel(y_labels.get(new_tag, new_tag))
-        plt.title(title)
         plt.legend(loc="upper left", prop={"size": 10}, facecolor="white", fancybox=True)
-        plt.grid(True)
-
         out_path = os.path.join(output_dir, f"{env_name}_{new_tag}_plot.png")
         plt.savefig(out_path, bbox_inches="tight", dpi=300)
         plt.close()
-        print(f"→ Plot saved: {out_path}")
+        print(f"[{env_name}][{new_tag}] → Plot saved: {out_path}")
