@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Breakout-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -70,15 +70,11 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
-    """coefficient for scaling the autotune entropy target"""
-    alpha_eps: float = 1e-6
-    """automatic tuning of the entropy coefficient"""
     target_entropy_start_exploitation: float = 0.50
     """coefficient for scaling the autotune entropy target"""
-    target_entropy_end_exploitation: float = 0.85
+    target_entropy_end_exploitation: float = 0.80
+    alpha_eps: float = 2e-2
     """a small epsilon added for adjusting metrics"""
-    alpha_delay_steps = 100000
 
 
 def target_entropy_from_exploitation_probability(p, n):
@@ -210,7 +206,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     args = tyro.cli(Args)
 
     # Create one shared TensorBoard writer that will log all runs into the same folder.
-    writer = SummaryWriter(f"runs/{args.env_id}__{args.exp_name}")
+    writer = SummaryWriter(f"runs_old/{args.env_id}__{args.exp_name}")
     # You can also add the hyperparameters text once (they remain common across runs)
     writer.add_text(
         "global_hyperparameters",
@@ -295,7 +291,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         episodic_lengths = []
         avg_return_normalised = alpha
         buffer_size = args.buffer_size
-        alpha_delay_steps = args.alpha_delay_steps
 
         lowest_return = np.inf
 
@@ -322,12 +317,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     latest_return = episodic_return
                     writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
-                    if sum(episodic_lengths) > buffer_size:
-                        episode_returns.pop(0)
-                        episodic_lengths.pop(0)
 
                     episode_returns.append(episodic_return)
                     episodic_lengths.append(episodic_length)
+                    if sum(episodic_lengths) > buffer_size:
+                        episode_returns.pop(0)
+                        episodic_lengths.pop(0)
                     avg_return = np.mean(episode_returns)
                     writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
 
@@ -342,8 +337,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
             # Process replay buffer
             real_next_obs = next_obs.copy()
-            for idx, trunc in enumerate(truncations):
-                if trunc:
+            for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
+                if trunc or term:
                     real_next_obs[idx] = infos["final_observation"][idx]
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
             obs = next_obs
@@ -357,11 +352,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     policy_dist = Categorical(probs=action_probs)
                     entropy = policy_dist.entropy().mean().item()
 
-                    if global_step > args.alpha_delay_steps:
-                        alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + args.alpha_eps) / entropy)
-                    else:
-                        alpha_used = alpha
-
+                    alpha_used = (torch.as_tensor(avg_return_normalised, device=device) + args.alpha_eps) / entropy
                     with torch.no_grad():
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
@@ -388,7 +379,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         qf1_values = qf1(data.observations)
                         qf2_values = qf2(data.observations)
                         min_qf_values = torch.min(qf1_values, qf2_values)
-                    actor_loss = (action_probs * ((alpha_used * log_pi) - min_qf_values)).mean()
+                    actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
@@ -399,11 +390,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         current_target_entropy = target_entropy_start + progress_ratio * (
                                 target_entropy_end - target_entropy_start)
                         writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
-                        # ----------------------------------
 
-                        with torch.no_grad():
-                            log_alpha.copy_(torch.log(torch.as_tensor(alpha_used, device=device)))
-                        alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                        alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + current_target_entropy).detach())).mean()
                         a_optimizer.zero_grad()
                         alpha_loss.backward()
                         a_optimizer.step()

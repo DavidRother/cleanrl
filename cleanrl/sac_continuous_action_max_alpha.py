@@ -343,7 +343,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             data = rb.sample(args.batch_size)
             pi, log_pi, _ = actor.get_action(data.observations)
             entropy = (-log_pi).mean().item()
-            alpha_used = min(alpha, (torch.as_tensor(avg_return_normalised, device=device) + alpha_eps) / entropy.abs())
+            alpha_used = torch.as_tensor(avg_return_normalised, device=device) + alpha_eps
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
