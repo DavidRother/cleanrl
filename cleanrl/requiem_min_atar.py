@@ -73,7 +73,7 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha = 0.02  # softmax temperature
-    delta_start = 0.05  # very exploratory at the beginning
+    delta_start = 0.5  # very exploratory at the beginning
     delta_end = 0.999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
 
@@ -274,7 +274,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     num_actions = envs.single_action_space.n
 
     alpha = args.alpha  # softmax temperature
-    delta_start = kl_categorical_vs_uniform((1 / num_actions) + args.delta_start, num_actions)
+    delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
     delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
     delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
     print(f"KL start bound: {delta_start}")
