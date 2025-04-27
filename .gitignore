@@ -135,3 +135,4 @@ venv.bak/
 /cleanrl/runs_minatar_trial/
 /cleanrl/runs_temp/
 /cleanrl/runs_temporary/
+/cleanrl/runs_soft_q/
