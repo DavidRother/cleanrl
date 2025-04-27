@@ -50,7 +50,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Freeway-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -58,7 +58,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
-    buffer_size: int = 1000000
+    buffer_size: int = 100000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -78,6 +78,10 @@ class Args:
     """timestep to start learning"""
     train_frequency: int = 4
     """the frequency of training"""
+    alpha = 0.02  # softmax temperature
+    delta_start = 0.1  # very exploratory at the beginning
+    delta_end = 1.5  # almost deterministic by the end
+    delta_fraction = 0.8  # finish annealing after 80 % of training
 
 
 def kl_penalty(q_vals: torch.Tensor, delta: float, alpha: float) -> torch.Tensor:
@@ -261,18 +265,17 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     episodic_lengths = []
     buffer_size = args.buffer_size
 
-    alpha = 0.04  # softmax temperature
-    kl_beta = 1.0  # weight of the KL term in the total loss
-    delta_start = 0.7  # very exploratory at the beginning
-    delta_end = 0.05  # almost deterministic by the end
-    delta_fraction = 0.8  # finish annealing after 80 % of training
+    alpha = args.alpha  # softmax temperature
+    delta_start = args.delta_start  # very exploratory at the beginning
+    delta_end = args.delta_end  # almost deterministic by the end
+    delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in progress_bar:
         # ALGO LOGIC: put action logic here
-        delta_t = max(delta_end,
-                      delta_start - (delta_start - delta_end) * min(1.0, global_step /
+        delta_t = min(delta_end,
+                      delta_start + (delta_end - delta_start) * min(1.0, global_step /
                                                                     (delta_fraction * args.total_timesteps)))
 
         q_values = q_network(torch.Tensor(obs).to(device))
@@ -316,14 +319,15 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
+        num_kl_steps = 0
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.train_frequency == 0:
                 data = rb.sample(args.batch_size)
+                q_pred = q_network(data.observations)
                 with torch.no_grad():
                     target_max, _ = target_network(data.next_observations).max(dim=1)
                     td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
-                q_pred = q_network(data.observations)
                 old_val = q_pred.gather(1, data.actions).squeeze()
                 loss = F.mse_loss(td_target, old_val)
 
@@ -333,8 +337,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 optimizer.step()
 
                 q_pred = q_network(data.observations)
-
-                num_kl_steps = 0
                 while not kl_close_enough(q_pred, delta_t, alpha):
                     kl_loss = kl_penalty(q_pred, delta_t, alpha)
                     optimizer.zero_grad()
