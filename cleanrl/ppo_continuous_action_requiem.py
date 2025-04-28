@@ -85,7 +85,19 @@ class Args:
     delta_start = 0.6  # very exploratory at the beginning
     delta_end = 0.99999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
-    max_log_std = 0.5
+    max_log_std = 2.0
+    min_log_std = -5
+
+
+def kl_divergence_diag_gaussian_torch(logstd_p: torch.Tensor,
+                                      logstd_q: torch.Tensor) -> torch.Tensor:
+    """
+    Same as above but batched: inputs shape (..., d) and returns shape (...).
+    """
+    var_p = torch.exp(2 * logstd_p)
+    var_q = torch.exp(2 * logstd_q)
+    # sum over last (action) dimension
+    return 0.5 * (2 * (logstd_q - logstd_p) + var_p / var_q - 1).sum(dim=-1)
 
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
@@ -131,6 +143,21 @@ class Agent(nn.Module):
             layer_init(nn.Linear(64, np.prod(envs.single_action_space.shape)), std=0.01),
         )
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
+
+        self.register_buffer(
+            "action_scale",
+            torch.tensor(
+                (envs.single_action_space.high - envs.single_action_space.low) / 2.0,
+                dtype=torch.float32,
+            ),
+        )
+        self.register_buffer(
+            "action_bias",
+            torch.tensor(
+                (envs.single_action_space.high + envs.single_action_space.low) / 2.0,
+                dtype=torch.float32,
+            ),
+        )
 
     def get_value(self, x):
         return self.critic(x)

@@ -28,7 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 123456
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -72,11 +72,11 @@ class Args:
     """timestep to start learning"""
     train_frequency: int = 4
     """the frequency of training"""
-    alpha_start = 0.04
-    alpha_end = 0.03  # softmax temperature
-    delta_start = 0.6  # very exploratory at the beginning
-    delta_end = 0.99999  # almost deterministic by the end
-    delta_fraction = 0.8  # finish annealing after 80 % of training
+    alpha_start: float = 0.04
+    alpha_end: float = 0.03  # softmax temperature
+    delta_start: float = 0.6  # very exploratory at the beginning
+    delta_end: float = 0.99999  # almost deterministic by the end
+    delta_fraction: float = 0.8  # finish annealing after 80 % of training
 
 
 def kl_categorical_vs_uniform(p, n):
@@ -351,7 +351,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 optimizer.step()
 
                 q_pred = q_network(data.observations)
-                while (kl_loss := kl_penalty(q_pred, delta_t, alpha)) > 1e-4:
+                while not kl_close_enough(q_pred, delta_t, alpha):
+                    kl_loss = kl_penalty(q_pred, delta_t, alpha)
                     optimizer.zero_grad()
                     kl_loss.backward()
                     optimizer.step()
