@@ -28,7 +28,7 @@ from torch.utils.tensorboard import SummaryWriter
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 123456
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -254,188 +254,175 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     writer = SummaryWriter(f"runs_soft_q/{run_name}")
     writer.add_text(
-        "hyperparameters",
+        "global_hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        global_step=0,
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
+    for run_idx in range(5):
 
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+        current_seed = args.seed + run_idx
+        run_prefix = f"seed_{current_seed}"
+        run_name = f"{args.env_id}__{args.exp_name}__{run_prefix}__{int(time.time())}"
+        print(f"Starting run: {run_prefix}")
 
-    # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+        # TRY NOT TO MODIFY: seeding
+        random.seed(current_seed)
+        np.random.seed(current_seed)
+        torch.manual_seed(current_seed)
+        torch.backends.cudnn.deterministic = args.torch_deterministic
 
-    q_network = QNetwork(envs).to(device)
-    optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs).to(device)
-    target_network.load_state_dict(q_network.state_dict())
+        device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
-
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        optimize_memory_usage=True,
-        handle_timeout_termination=False,
-    )
-    start_time = time.time()
-    progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
-    latest_return = None
-    episode_returns = []
-    episodic_lengths = []
-    buffer_size = args.buffer_size
-    num_actions = envs.single_action_space.n
-
-    alpha = args.alpha  # softmax temperature
-    delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
-    delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
-    delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
-    print(f"KL start bound: {delta_start}")
-    print(f"KL end bound: {delta_end}")
-
-    num_kl_steps = 0
-    # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
-    for global_step in progress_bar:
-        # ALGO LOGIC: put action logic here
-        delta_t = delta_schedule(
-            step=global_step,
-            total_steps=int(delta_fraction * args.total_timesteps),
-            delta_min=delta_start,
-            delta_max=delta_end,
-            power=3,
+        # env setup
+        envs = gym.vector.SyncVectorEnv(
+            [make_env(args.env_id, current_seed + i, i, args.capture_video, run_name) for i in range(args.num_envs)]
         )
+        assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-        q_values = q_network(torch.Tensor(obs).to(device))
-        # Sample from the softmax policy induced by Q/alpha
-        probs = torch.softmax(q_values / alpha, dim=1)
-        dist = torch.distributions.Categorical(probs)
-        actions = dist.sample().cpu().numpy()
+        q_network = QNetwork(envs).to(device)
+        optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+        target_network = QNetwork(envs).to(device)
+        target_network.load_state_dict(q_network.state_dict())
 
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                # Skip the envs that are not done
-                if "episode" not in info:
-                    continue
-                episodic_return = info["episode"]["r"]
-                episodic_length = info["episode"]["l"]
-                latest_return = episodic_return
-                writer.add_scalar("charts/episodic_return", episodic_return, global_step)
-                writer.add_scalar("charts/episodic_length", episodic_length, global_step)
-
-                episode_returns.append(episodic_return)
-                episodic_lengths.append(episodic_length)
-                if sum(episodic_lengths) > buffer_size:
-                    episode_returns.pop(0)
-                    episodic_lengths.pop(0)
-                avg_return = sum(episode_returns) / len(episode_returns)
-                writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
-                break
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
-
-        # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            if global_step % args.train_frequency == 0:
-                delta_t = min(delta_end,
-                              delta_start + (delta_end - delta_start)
-                              * min(1.0, global_step / (delta_fraction * args.total_timesteps)))
-                data = rb.sample(args.batch_size)
-                q_pred = q_network(data.observations)
-
-                with torch.no_grad():
-                    target_max, _ = target_network(data.next_observations).max(dim=1)
-                    td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
-
-                q_taken = q_pred.gather(1, data.actions).squeeze()
-                td_loss = F.mse_loss(td_target, q_taken)
-
-                B, A = q_pred.shape
-                logA = math.log(A)
-                probs = F.softmax(q_pred / args.alpha, dim=1)
-                entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)
-                kl_batch = logA - entropy
-                violation = torch.clamp(kl_batch - delta_t, min=0.0)
-                hinge_mean = violation.mean()
-                primal_loss = td_loss + lambda_param.detach() * hinge_mean
-
-                optimizer.zero_grad()
-                primal_loss.backward()
-                optimizer.step()
-
-                with torch.no_grad():
-                    lambda_param += args.lambda_lr * hinge_mean
-                    lambda_param.clamp_(min=0.0)
-
-                if (global_step % (args.train_frequency * 25)) == 0:
-                    writer.add_scalar("losses/td_loss", td_loss, global_step)
-                    writer.add_scalar("losses/q_values", q_taken.mean().item(), global_step)
-                    sps = int(global_step / (time.time() - start_time))
-                    writer.add_scalar("charts/SPS", sps, global_step)
-                    writer.add_scalar("charts/entropy", entropy.mean().item(), global_step)
-                    writer.add_scalar("charts/delta", delta_t, global_step)
-                    writer.add_scalar("charts/kl_mean", kl_batch.mean().item(), global_step)
-                    writer.add_scalar("charts/lambda", lambda_param.item(), global_step)
-
-                    progress_bar.set_postfix({
-                        "step": global_step,
-                        "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
-                        "sps": sps
-                    })
-
-            # update target network
-            if global_step % args.target_network_frequency == 0:
-                for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
-                    target_network_param.data.copy_(
-                        args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
-                    )
-
-    if args.save_model:
-        model_path = f"runs_old/{run_name}/{args.exp_name}.cleanrl_model"
-        torch.save(q_network.state_dict(), model_path)
-        print(f"model saved to {model_path}")
-        from cleanrl_utils.evals.dqn_eval import evaluate
-
-        episodic_returns = evaluate(
-            model_path,
-            make_env,
-            args.env_id,
-            eval_episodes=10,
-            run_name=f"{run_name}-eval",
-            Model=QNetwork,
-            device=device,
-            epsilon=0.05,
+        rb = ReplayBuffer(
+            args.buffer_size,
+            envs.single_observation_space,
+            envs.single_action_space,
+            device,
+            optimize_memory_usage=True,
+            handle_timeout_termination=False,
         )
-        for idx, episodic_return in enumerate(episodic_returns):
-            writer.add_scalar("eval/episodic_return", episodic_return, idx)
+        start_time = time.time()
+        progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
+        latest_return = None
+        episode_returns = []
+        episodic_lengths = []
+        buffer_size = args.buffer_size
+        num_actions = envs.single_action_space.n
 
-        if args.upload_model:
-            from cleanrl_utils.huggingface import push_to_hub
+        alpha = args.alpha  # softmax temperature
+        delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
+        delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
+        delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
+        print(f"KL start bound: {delta_start}")
+        print(f"KL end bound: {delta_end}")
 
-            repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
-            repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "DQN", f"runs_old/{run_name}", f"videos/{run_name}-eval")
+        num_kl_steps = 0
+        # TRY NOT TO MODIFY: start the game
+        obs, _ = envs.reset(seed=current_seed)
+        for global_step in progress_bar:
+            # ALGO LOGIC: put action logic here
+            delta_t = delta_schedule(
+                step=global_step,
+                total_steps=int(delta_fraction * args.total_timesteps),
+                delta_min=delta_start,
+                delta_max=delta_end,
+                power=3,
+            )
 
-    envs.close()
-    writer.close()
+            q_values = q_network(torch.Tensor(obs).to(device))
+            # Sample from the softmax policy induced by Q/alpha
+            probs = torch.softmax(q_values / alpha, dim=1)
+            dist = torch.distributions.Categorical(probs)
+            actions = dist.sample().cpu().numpy()
+
+            # TRY NOT TO MODIFY: execute the game and log data.
+            next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+            # TRY NOT TO MODIFY: record rewards for plotting purposes
+            if "final_info" in infos:
+                for info in infos["final_info"]:
+                    # Skip the envs that are not done
+                    if "episode" not in info:
+                        continue
+                    episodic_return = info["episode"]["r"]
+                    episodic_length = info["episode"]["l"]
+                    latest_return = episodic_return
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
+
+                    episode_returns.append(episodic_return)
+                    episodic_lengths.append(episodic_length)
+                    if sum(episodic_lengths) > buffer_size:
+                        episode_returns.pop(0)
+                        episodic_lengths.pop(0)
+                    avg_return = sum(episode_returns) / len(episode_returns)
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
+                    break
+
+            # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+            real_next_obs = next_obs.copy()
+            for idx, trunc in enumerate(truncations):
+                if trunc:
+                    real_next_obs[idx] = infos["final_observation"][idx]
+            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+
+            # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
+            obs = next_obs
+
+            # ALGO LOGIC: training.
+            if global_step > args.learning_starts:
+                if global_step % args.train_frequency == 0:
+                    delta_t = min(delta_end,
+                                  delta_start + (delta_end - delta_start)
+                                  * min(1.0, global_step / (delta_fraction * args.total_timesteps)))
+                    data = rb.sample(args.batch_size)
+                    q_pred = q_network(data.observations)
+
+                    with torch.no_grad():
+                        target_max, _ = target_network(data.next_observations).max(dim=1)
+                        td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
+
+                    q_taken = q_pred.gather(1, data.actions).squeeze()
+                    td_loss = F.mse_loss(td_target, q_taken)
+
+                    B, A = q_pred.shape
+                    logA = math.log(A)
+                    probs = F.softmax(q_pred / args.alpha, dim=1)
+                    entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)
+                    kl_batch = logA - entropy
+                    violation = torch.clamp(kl_batch - delta_t, min=0.0)
+                    hinge_mean = violation.mean()
+                    primal_loss = td_loss + lambda_param.detach() * hinge_mean
+
+                    optimizer.zero_grad()
+                    primal_loss.backward()
+                    optimizer.step()
+
+                    with torch.no_grad():
+                        lambda_param += args.lambda_lr * hinge_mean
+                        lambda_param.clamp_(min=0.0)
+
+                    if (global_step % (args.train_frequency * 25)) == 0:
+                        writer.add_scalar(f"{run_prefix}/losses/td_loss", td_loss, global_step)
+                        writer.add_scalar(f"{run_prefix}/losses/q_values", q_taken.mean().item(), global_step)
+                        sps = int(global_step / (time.time() - start_time))
+                        writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
+                        writer.add_scalar(f"{run_prefix}/charts/entropy", entropy.mean().item(), global_step)
+                        writer.add_scalar(f"{run_prefix}/charts/delta", delta_t, global_step)
+                        writer.add_scalar(f"{run_prefix}/charts/kl_mean", kl_batch.mean().item(), global_step)
+                        writer.add_scalar(f"{run_prefix}/charts/lambda", lambda_param.item(), global_step)
+
+                        progress_bar.set_postfix({
+                            "step": global_step,
+                            "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
+                            "sps": sps
+                        })
+
+                # update target network
+                if global_step % args.target_network_frequency == 0:
+                    for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
+                        target_network_param.data.copy_(
+                            args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
+                        )
+
+        # Save the final actor model into the TensorBoard folder.
+        model_save_path = os.path.join(writer.log_dir, f"final_model_{run_prefix}.pt")
+        torch.save(q_network.state_dict(), model_save_path)
+        print(f"Saved final model for {run_prefix} to {model_save_path}")
+
+        envs.close()
+        writer.close()
