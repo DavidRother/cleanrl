@@ -72,7 +72,8 @@ class Args:
     """timestep to start learning"""
     train_frequency: int = 4
     """the frequency of training"""
-    alpha = 0.001  # softmax temperature
+    alpha_start = 0.04
+    alpha_end = 0.01  # softmax temperature
     delta_start = 0.6  # very exploratory at the beginning
     delta_end = 0.999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
@@ -273,7 +274,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     buffer_size = args.buffer_size
     num_actions = envs.single_action_space.n
 
-    alpha = args.alpha  # softmax temperature
+    alpha = args.alpha_start  # softmax temperature
+    alpha_start = args.alpha_start
+    alpha_end = args.alpha_end
     delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
     delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
     delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
@@ -287,6 +290,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         delta_t = min(delta_end,
                       delta_start + (delta_end - delta_start) * min(1.0, global_step /
                                                                     (delta_fraction * args.total_timesteps)))
+        alpha = max(alpha_end, delta_start + (alpha_end - alpha_start) * min(1.0, global_step /
+                                                                             (delta_fraction * args.total_timesteps)))
 
         q_values = q_network(torch.Tensor(obs).to(device))
         # Sample from the softmax policy induced by Q/alpha
