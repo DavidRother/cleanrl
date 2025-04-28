@@ -50,9 +50,9 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/SpaceInvaders-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
-    total_timesteps: int = 3000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
@@ -73,8 +73,8 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha_start = 0.04
-    alpha_end = 0.02  # softmax temperature
-    delta_start = 0.6  # very exploratory at the beginning
+    alpha_end = 0.01  # softmax temperature
+    delta_start = 0.5  # very exploratory at the beginning
     delta_end = 0.99999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
 
@@ -84,12 +84,7 @@ def kl_categorical_vs_uniform(p, n):
         raise ValueError("p must be in (0,1)")
     if n < 2:
         raise ValueError("n must be at least 2")
-
-    # term for the heavy action
-    term1 = p * np.log(p * n)
-    # term for the remaining n-1 actions
-    term2 = (1 - p) * np.log((1 - p) * n / (n - 1))
-    return term1 + term2
+    return p * np.log(p * n) + (1 - p) * np.log((1 - p) * n)
 
 
 def kl_penalty(q_vals: torch.Tensor, delta: float, alpha: float) -> torch.Tensor:
@@ -351,7 +346,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 optimizer.step()
 
                 q_pred = q_network(data.observations)
-                while kl_loss := kl_penalty(q_pred, delta_t, alpha):
+                while not kl_close_enough(q_pred, delta_t, alpha):
+                    kl_loss = kl_penalty(q_pred, delta_t, alpha)
                     optimizer.zero_grad()
                     kl_loss.backward()
                     optimizer.step()
