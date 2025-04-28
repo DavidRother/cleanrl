@@ -50,7 +50,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/SpaceInvaders-v1"
+    env_id: str = "MinAtar/Seaquest-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -73,7 +73,7 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha_start = 0.04
-    alpha_end = 0.02  # softmax temperature
+    alpha_end = 0.03  # softmax temperature
     delta_start = 0.6  # very exploratory at the beginning
     delta_end = 0.99999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
@@ -283,6 +283,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     print(f"KL start bound: {delta_start}")
     print(f"KL end bound: {delta_end}")
 
+    num_kl_steps = 0
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in progress_bar:
@@ -333,7 +334,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
-        num_kl_steps = 0
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.train_frequency == 0:
@@ -351,7 +351,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 optimizer.step()
 
                 q_pred = q_network(data.observations)
-                while kl_loss := kl_penalty(q_pred, delta_t, alpha):
+                while (kl_loss := kl_penalty(q_pred, delta_t, alpha)) > 1e-4:
                     optimizer.zero_grad()
                     kl_loss.backward()
                     optimizer.step()

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import gymnasium as gym
 import numpy as np
 import torch
+import math
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -72,6 +73,59 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+
+
+def kl_categorical_vs_uniform(p, n):
+    if not (0 < p < 1):
+        raise ValueError("p must be in (0,1)")
+    if n < 2:
+        raise ValueError("n must be at least 2")
+
+    # term for the heavy action
+    term1 = p * np.log(p * n)
+    # term for the remaining n-1 actions
+    term2 = (1 - p) * np.log((1 - p) * n / (n - 1))
+    return term1 + term2
+
+
+def kl_penalty(q_vals: torch.Tensor, delta: float, alpha: float) -> torch.Tensor:
+    """
+    q_vals : (B, A) – Q-values from the network (requires_grad=True)
+    delta  : float   – target KL(π || uniform)
+    alpha  : float   – temperature used in the softmax   π = softmax(Q / α)
+    returns a scalar hinge loss (0 if KL already ≤ δ)
+    """
+    B, A = q_vals.shape
+    logA = torch.log(torch.tensor(float(A), device=q_vals.device, dtype=q_vals.dtype))
+    probs = F.softmax(q_vals / alpha, dim=1)
+    entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)        # (B,)
+    kl_batch = logA - entropy                                       # (B,)
+    penalty = torch.clamp(kl_batch - delta, min=0.0).mean()         # hinge
+    return penalty
+
+
+def kl_close_enough(
+        q_vals: torch.Tensor,
+        delta: float,
+        alphaa: float,
+        tol: float = 1e-4) -> bool:
+    """
+    Returns True if *all* states in the current batch have
+    KL(π || uniform) ≤ delta + tol.
+
+    q_vals : (B, A)  – raw Q values  (requires_grad=False is fine)
+    delta  : float   – current KL target  (delta_t)
+    alphaa  : float   – temperature used by the policy
+    tol    : float   – small slack to avoid numerical issues
+    """
+    with torch.no_grad():
+        B, A = q_vals.shape
+        logA = math.log(A)
+        probs = F.softmax(q_vals / alphaa, dim=1)
+        entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)     # (B,)
+        kl = logA - entropy                                          # (B,)
+        return torch.all(kl <= delta + tol).item()
+
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
