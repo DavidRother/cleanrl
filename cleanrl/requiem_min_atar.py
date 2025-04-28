@@ -278,7 +278,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     alpha_start = args.alpha_start
     alpha_end = args.alpha_end
     delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
-    delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
+    delta_end = kl_categorical_vs_uniform(args.delta_end, num_actions)
     delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
     print(f"KL start bound: {delta_start}")
     print(f"KL end bound: {delta_end}")

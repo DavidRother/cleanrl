@@ -2,7 +2,6 @@
 import os
 import random
 import time
-from collections import deque
 from dataclasses import dataclass
 
 import gymnasium as gym
@@ -23,7 +22,7 @@ class Args:
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = False
+    cuda: bool = True
     """if toggled, cuda will be enabled by default"""
     track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
@@ -67,7 +66,7 @@ class Args:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.01
+    ent_coef: float = 0.0
     """coefficient of the entropy"""
     vf_coef: float = 0.5
     """coefficient of the value function"""
@@ -83,6 +82,10 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
+    delta_start = 0.6  # very exploratory at the beginning
+    delta_end = 0.99999  # almost deterministic by the end
+    delta_fraction = 0.8  # finish annealing after 80 % of training
+    max_log_std = 0.5
 
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
@@ -198,17 +201,16 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    queue_return = deque(maxlen=50)
-    queue_length = deque(maxlen=50)
-    min_return = np.inf
-    max_alpha = 1.
+    delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
+    delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
+    delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
+    print(f"KL start bound: {delta_start}")
+    print(f"KL end bound: {delta_end}")
 
     for iteration in range(1, args.num_iterations + 1):
-        # Annealing the rate if instructed to do so.
-        if args.anneal_lr:
-            frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"] = lrnow
+        delta_t = min(delta_end,
+                      delta_start + (delta_end - delta_start) * min(1.0, global_step /
+                                                                    (delta_fraction * args.total_timesteps)))
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -231,19 +233,9 @@ if __name__ == "__main__":
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        queue_return.append(info['episode']['r'])
-                        queue_length.append(info['episode']['l'])
-
-                        running_return = np.mean(queue_return)
-                        running_length = np.mean(queue_length)
-                        min_return = np.minimum(info['episode']['r'], min_return)
-
-                        max_alpha = torch.as_tensor((running_return - min_return) / running_length)
-
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}, max_alpha={max_alpha}")
+                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -312,14 +304,20 @@ if __name__ == "__main__":
                 else:
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
-                used_ent_coef = args.ent_coef  # torch.minimum(torch.as_tensor(args.ent_coef), max_alpha)
-                entropy_loss = entropy.mean()
                 loss = pg_loss + v_loss * args.vf_coef
 
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
                 optimizer.step()
+
+                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
+                while kl_loss := kl_penalty(q_pred, delta_t, alpha):
+                    optimizer.zero_grad()
+                    kl_loss.backward()
+                    optimizer.step()
+                    q_pred = q_network(data.observations)
+                    num_kl_steps += 1
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
