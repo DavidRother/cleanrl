@@ -50,7 +50,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Breakout-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -72,8 +72,8 @@ class Args:
     """timestep to start learning"""
     train_frequency: int = 4
     """the frequency of training"""
-    alpha = 0.02  # softmax temperature
-    delta_start = 0.5  # very exploratory at the beginning
+    alpha = 0.001  # softmax temperature
+    delta_start = 0.6  # very exploratory at the beginning
     delta_end = 0.999  # almost deterministic by the end
     delta_fraction = 0.8  # finish annealing after 80 % of training
 
