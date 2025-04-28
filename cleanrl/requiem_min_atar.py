@@ -50,11 +50,11 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Breakout-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
-    total_timesteps: int = 3000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-4
+    learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -66,7 +66,7 @@ class Args:
     """the target network update rate"""
     target_network_frequency: int = 1000
     """the timesteps it takes to update the target network"""
-    batch_size: int = 32
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
     learning_starts: int = 20000
     """timestep to start learning"""
