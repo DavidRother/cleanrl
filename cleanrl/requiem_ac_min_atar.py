@@ -76,8 +76,8 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha: float = 0.02  # softmax temperature
-    delta_start: float = 0.5  # very exploratory at the beginning
-    delta_end: float = 0.999  # almost deterministic by the end
+    delta_start: float = 0.75  # very exploratory at the beginning
+    delta_end: float = 0.99999  # almost deterministic by the end
     delta_fraction: float = 0.7  # finish annealing after 80 % of training
     lambda_lr: float = 1e-3            # step size for dual variable λ
     lambda_init: float = 0.0

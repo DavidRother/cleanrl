@@ -50,9 +50,9 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
-    total_timesteps: int = 3000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     learning_rate: float = 1e-4
     """the learning rate of the optimizer"""
@@ -73,8 +73,8 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha: float = 0.02  # softmax temperature
-    delta_start: float = 0.5  # very exploratory at the beginning
-    delta_end: float = 0.999  # almost deterministic by the end
+    delta_start: float = 0.75  # very exploratory at the beginning
+    delta_end: float = 0.99999
     delta_fraction: float = 0.7  # finish annealing after 80 % of training
     lambda_lr: float = 1e-3            # step size for dual variable λ
     lambda_init: float = 0.0
@@ -227,6 +227,11 @@ def delta_schedule(
     return delta_min + (delta_max - delta_min) * s
 
 
+def boltzmann_value(q_vals: torch.Tensor, alpha_: float) -> torch.Tensor:
+    probs_ = torch.softmax(q_vals / alpha_, dim=1)       # π(a|s)
+    return torch.sum(probs_ * q_vals, dim=1)
+
+
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -360,8 +365,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     q_pred = q_network(data.observations)
 
                     with torch.no_grad():
-                        target_max, _ = target_network(data.next_observations).max(dim=1)
-                        td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
+                        next_q = target_network(data.next_observations)
+                        v_next = boltzmann_value(next_q, alpha)
+                        td_target = data.rewards.flatten() + args.gamma * v_next * (1 - data.dones.flatten())
 
                     q_taken = q_pred.gather(1, data.actions).squeeze()
                     td_loss = F.mse_loss(td_target, q_taken)
