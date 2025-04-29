@@ -73,7 +73,7 @@ class Args:
     train_frequency: int = 4
     """the frequency of training"""
     alpha: float = 0.02  # softmax temperature
-    delta_start: float = 0.75  # very exploratory at the beginning
+    delta_start: float = 0.6  # very exploratory at the beginning
     delta_end: float = 0.99999
     delta_fraction: float = 0.7  # finish annealing after 80 % of training
     lambda_lr: float = 1e-3            # step size for dual variable λ
@@ -298,22 +298,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         alpha = args.alpha  # softmax temperature
         delta_start = kl_categorical_vs_uniform(args.delta_start, num_actions)
         delta_end = kl_categorical_vs_uniform(args.delta_end, envs.single_action_space.n)
-        delta_fraction = args.delta_fraction  # finish annealing after 80 % of training
+        delta_fraction = args.delta_fraction
         print(f"KL start bound: {delta_start}")
         print(f"KL end bound: {delta_end}")
 
-        num_kl_steps = 0
         # TRY NOT TO MODIFY: start the game
         obs, _ = envs.reset(seed=current_seed)
         for global_step in progress_bar:
             # ALGO LOGIC: put action logic here
-            delta_t = delta_schedule(
-                step=global_step,
-                total_steps=int(delta_fraction * args.total_timesteps),
-                delta_min=delta_start,
-                delta_max=delta_end,
-                power=3,
-            )
 
             q_values = q_network(torch.Tensor(obs).to(device))
             # Sample from the softmax policy induced by Q/alpha
@@ -358,9 +350,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             # ALGO LOGIC: training.
             if global_step > args.learning_starts:
                 if global_step % args.train_frequency == 0:
-                    delta_t = min(delta_end,
-                                  delta_start + (delta_end - delta_start)
-                                  * min(1.0, global_step / (delta_fraction * args.total_timesteps)))
+                    delta_t = delta_schedule(
+                        step=global_step,
+                        total_steps=int(delta_fraction * args.total_timesteps),
+                        delta_min=delta_start,
+                        delta_max=delta_end,
+                        power=3,
+                    )
                     data = rb.sample(args.batch_size)
                     q_pred = q_network(data.observations)
 

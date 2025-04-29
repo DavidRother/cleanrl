@@ -60,10 +60,27 @@ class Args:
     """the frequency of training policy (delayed)"""
     target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
     """the frequency of updates for the target nerworks"""
-    alpha: float = 0.2
+    alpha: float = 0.02
     """Entropy regularization coefficient."""
-    autotune: bool = True
-    """automatic tuning of the entropy coefficient"""
+    action_sampling = 20
+    delta_start: float = 0.6  # very exploratory at the beginning
+    delta_end: float = 0.99999
+    delta_fraction: float = 0.7  # finish annealing after 80 % of training
+    lambda_lr: float = 1e-3            # step size for dual variable λ
+    lambda_init: float = 0.0
+
+
+def kl_categorical_vs_uniform(p, n):
+    if not (0 < p < 1):
+        raise ValueError("p must be in (0,1)")
+    if n < 2:
+        raise ValueError("n must be at least 2")
+
+    # term for the heavy action
+    term1 = p * np.log(p * n)
+    # term for the remaining n-1 actions
+    term2 = (1 - p) * np.log((1 - p) * n / (n - 1))
+    return term1 + term2
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -151,6 +168,24 @@ class Actor(nn.Module):
         return action, log_prob, mean
 
 
+def delta_schedule(
+    step: int,
+    total_steps: int,
+    delta_min: float,
+    delta_max: float,
+    power: float = 3.0,        # 1.0 → linear, >1.0 → slow-start, <1.0 → fast-start
+) -> float:
+    """
+    Interpolates between `delta_min` (t=0) and `delta_max` (t=1) with a
+    power-law on the *fraction of remaining entropy*.
+
+        s = (step / total_steps) ** power
+        return delta_min + (delta_max - delta_min) * s
+    """
+    s = (step / total_steps) ** power
+    return delta_min + (delta_max - delta_min) * s
+
+
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -207,14 +242,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
-    # Automatic entropy tuning
-    if args.autotune:
-        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
-    else:
-        alpha = args.alpha
+    lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
 
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
@@ -232,9 +260,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     episodic_lengths = []
     buffer_size = args.buffer_size
 
+    alpha = args.alpha  # softmax temperature
+    delta_start = kl_categorical_vs_uniform(args.delta_start, args.action_sampling)
+    delta_end = kl_categorical_vs_uniform(args.delta_end, args.action_sampling)
+    delta_fraction = args.delta_fraction
+    print(f"KL start bound: {delta_start}")
+    print(f"KL end bound: {delta_end}")
+
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
+    for global_step in progress_bar:
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -278,12 +313,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            delta_t = delta_schedule(
+                step=global_step,
+                total_steps=int(delta_fraction * args.total_timesteps),
+                delta_min=delta_start,
+                delta_max=delta_end,
+                power=3,
+            )
             data = rb.sample(args.batch_size)
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 qf2_next_target = qf2_target(data.next_observations, next_state_actions)
-                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
                 next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1)
 
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
@@ -292,15 +334,41 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
+            B = data.observations.shape[0]
+            K = args.action_sampling
+            # repeat each state K times
+            obs_rep = data.observations.unsqueeze(1).repeat(1, K, 1).view(B * K, -1)
+            # sample K actions per state
+            actions_rep, _, _ = actor.get_action(obs_rep)
+            # compute Q-values
+            q1_rep = qf1(obs_rep, actions_rep).view(B, K)
+            q2_rep = qf2(obs_rep, actions_rep).view(B, K)
+            q_rep = torch.min(q1_rep, q2_rep)
+            # form a discrete distribution over the K Q’s
+            logits = q_rep
+            p = torch.softmax(logits, dim=1)  # shape [B, K]
+            # uniform target
+            u = torch.full_like(p, 1.0 / K)
+            # KL(p || u) = sum p * (log p - log u)
+            kl = (p * (torch.log(p + 1e-8) - torch.log(u))).sum(dim=1)
+            violation = torch.clamp(kl - delta_t, min=0.0)
+            hinge_mean = violation.mean()
+
+            primal_loss = qf_loss + lambda_param.detach() * hinge_mean
+
             # optimize the model
             q_optimizer.zero_grad()
             qf_loss.backward()
             q_optimizer.step()
 
+            with torch.no_grad():
+                lambda_param += args.lambda_lr * hinge_mean
+                lambda_param.clamp_(min=0.0)
+
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
                     args.policy_frequency
-                ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
+                ):
                     pi, log_pi, _ = actor.get_action(data.observations)
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
@@ -327,14 +395,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/mean_entropy", entropy, global_step)
+                writer.add_scalar(f"charts/delta", delta_t, global_step)
+                writer.add_scalar(f"charts/kl_mean", kl.mean().item(), global_step)
+                writer.add_scalar(f"charts/lambda", lambda_param.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar(
-                    "charts/SPS",
-                    int(global_step / (time.time() - start_time)),
-                    global_step,
-                )
+                sps = int(global_step / (time.time() - start_time))
+                writer.add_scalar(f"charts/SPS", sps, global_step)
+
+                progress_bar.set_postfix({
+                    "step": global_step,
+                    "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
+                    "sps": sps
+                })
 
     envs.close()
     writer.close()
