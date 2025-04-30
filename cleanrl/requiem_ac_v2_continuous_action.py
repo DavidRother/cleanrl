@@ -69,6 +69,7 @@ class Args:
     delta_fraction: float = 0.7  # finish annealing after 80 % of training
     lambda_lr: float = 1e-3            # step size for dual variable λ
     lambda_init: float = 0.0
+    lambda_decay: float = 1e-3
 
 
 def kl_categorical_vs_uniform(p, n):
@@ -76,12 +77,18 @@ def kl_categorical_vs_uniform(p, n):
         raise ValueError("p must be in (0,1)")
     if n < 2:
         raise ValueError("n must be at least 2")
-
-    # term for the heavy action
     term1 = p * np.log(p * n)
-    # term for the remaining n-1 actions
     term2 = (1 - p) * np.log((1 - p) * n / (n - 1))
     return term1 + term2
+
+
+def diagonal_hinge_kl_loss(logstd, logstd_max, delta):
+    var = torch.exp(2 * logstd)
+    var_max = torch.exp(2 * logstd_max)
+    dim = logstd.size(-1)
+    kl = 0.5 * (torch.sum(var / var_max, dim=-1) + 2 * torch.sum(logstd_max - logstd, dim=-1) - dim)
+    violation = F.relu(kl - delta)
+    return violation.mean()
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -204,7 +211,7 @@ class Actor(nn.Module):
         # get policy parameters
         mean, log_std = self(x)                    # both [B, action_dim]
 
-        log_std_const = torch.full_like(mean, LOG_STD_MAX, device=mean.device)
+        log_std_const = torch.full_like(mean, log_std, device=mean.device)
         std_const = log_std_const.exp()
 
         # expand to [B, n, action_dim]
@@ -331,6 +338,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     alpha = args.alpha  # softmax temperature
     delta_start = kl_categorical_vs_uniform(args.delta_start, args.action_sampling)
     delta_end = kl_categorical_vs_uniform(args.delta_end, args.action_sampling)
+    beta_start = kl_to_max_entropy(LOG_STD_MAX)
+    beta_end = 
     delta_fraction = args.delta_fraction
     print(f"KL start bound: {delta_start}")
     print(f"KL end bound: {delta_end}")
@@ -430,6 +439,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             with torch.no_grad():
                 lambda_param += args.lambda_lr * hinge_mean
+                lambda_param -= args.lambda_decay * lambda_param
                 lambda_param.clamp_(min=0.0)
 
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
@@ -440,8 +450,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
-                    actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
-                    entropy = (-log_pi).mean().item()
+                    actor_loss = (-min_qf_pi).mean()
 
                     # ── 2. fresh sampling for σ-loss  ───────────────────────────
                     actions_rep, _, mean_current, log_std_pred = actor.sample_actions(
@@ -456,6 +465,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     sigma2_hat = (p.unsqueeze(-1) * diff2).sum(dim=1)
                     target_log_std = 0.5 * torch.log(sigma2_hat + 1e-8)
                     std_loss = F.mse_loss(log_std_pred, target_log_std.detach())
+
+                    # KL between current log std and LOG_STD_MAX
+                    expanded_log_std_max = torch.full_like(log_std_pred, LOG_STD_MAX)
+                    diagonal_hinge_kl_loss(log_std_pred, expanded_log_std_max, beta)
+                    violation = torch.clamp(kl - delta_t, min=0.0)
+                    hinge_mean = violation.mean()
 
                     # ── 3. optimise both heads together  ───────────────────────
                     actor_optimizer.zero_grad()
