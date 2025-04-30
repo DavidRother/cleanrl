@@ -244,7 +244,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     args = tyro.cli(Args)
     assert args.num_envs == 1, "vectorized envs are not supported at the moment"
-    writer = SummaryWriter(f"runs_requiem/{args.env_id}__{args.exp_name}")
+    writer = SummaryWriter(f"runs_requiem3/{args.env_id}__{args.exp_name}")
     writer.add_text(
         "global_hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),

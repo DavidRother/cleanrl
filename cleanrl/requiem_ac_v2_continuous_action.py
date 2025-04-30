@@ -339,7 +339,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     delta_start = kl_categorical_vs_uniform(args.delta_start, args.action_sampling)
     delta_end = kl_categorical_vs_uniform(args.delta_end, args.action_sampling)
     beta_start = kl_to_max_entropy(LOG_STD_MAX)
-    beta_end = 
+    beta_end =
     delta_fraction = args.delta_fraction
     print(f"KL start bound: {delta_start}")
     print(f"KL end bound: {delta_end}")
