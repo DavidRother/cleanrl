@@ -210,9 +210,7 @@ class Actor(nn.Module):
         B = x.shape[0]
         # get policy parameters
         mean, log_std = self(x)                    # both [B, action_dim]
-
-        log_std_const = torch.full_like(mean, log_std, device=mean.device)
-        std_const = log_std_const.exp()
+        std_const = log_std.exp()
 
         # expand to [B, n, action_dim]
         mean_exp = mean.unsqueeze(1).expand(-1, n, -1)
@@ -335,11 +333,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     episodic_lengths = []
     buffer_size = args.buffer_size
 
+    action_dim = envs.single_action_space.shape[0]
+    max_logstd_vec = torch.full((action_dim,), LOG_STD_MAX)
+    min_logstd_vec = torch.full((action_dim,), LOG_STD_MIN)
+
     alpha = args.alpha  # softmax temperature
     delta_start = kl_categorical_vs_uniform(args.delta_start, args.action_sampling)
     delta_end = kl_categorical_vs_uniform(args.delta_end, args.action_sampling)
-    beta_start = kl_to_max_entropy(LOG_STD_MAX)
-    beta_end =
+    beta_start = kl_to_max_entropy(max_logstd_vec).item()
+    beta_end = kl_to_max_entropy(min_logstd_vec).item()
+    beta_fraction = args.delta_fraction
     delta_fraction = args.delta_fraction
     print(f"KL start bound: {delta_start}")
     print(f"KL end bound: {delta_end}")
@@ -397,6 +400,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 delta_max=delta_end,
                 power=3,
             )
+            beta_t = delta_schedule(
+                step=global_step,
+                total_steps=int(beta_fraction * args.total_timesteps),
+                delta_min=beta_start,
+                delta_max=beta_end,
+                power=3,
+            )
             data = rb.sample(args.batch_size)
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
@@ -434,7 +444,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             # optimize the model
             q_optimizer.zero_grad()
-            qf_loss.backward()
+            primal_loss.backward()
             q_optimizer.step()
 
             with torch.no_grad():
@@ -468,14 +478,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
                     # KL between current log std and LOG_STD_MAX
                     expanded_log_std_max = torch.full_like(log_std_pred, LOG_STD_MAX)
-                    diagonal_hinge_kl_loss(log_std_pred, expanded_log_std_max, beta)
-                    violation = torch.clamp(kl - delta_t, min=0.0)
-                    hinge_mean = violation.mean()
+                    hinge_actor_std_loss = diagonal_hinge_kl_loss(log_std_pred, expanded_log_std_max, beta_t)
 
                     # ── 3. optimise both heads together  ───────────────────────
                     actor_optimizer.zero_grad()
                     std_optimizer.zero_grad()
-                    (actor_loss + std_loss).backward()
+                    (actor_loss + std_loss + hinge_actor_std_loss).backward()
                     std_optimizer.step()  # only fc_logstd params here
                     actor_optimizer.step()  # trunk + mean head
 

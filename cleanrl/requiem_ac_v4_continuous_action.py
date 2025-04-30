@@ -61,10 +61,34 @@ class Args:
     """the frequency of training policy (delayed)"""
     target_network_frequency: int = 1  # Denis Yarats' implementation delays this by 2.
     """the frequency of updates for the target nerworks"""
-    alpha: float = 0.2
+    alpha: float = 0.02
     """Entropy regularization coefficient."""
-    autotune: bool = True
-    """automatic tuning of the entropy coefficient"""
+    action_sampling = 30
+    delta_start: float = 0.3  # very exploratory at the beginning
+    delta_end: float = 0.99999
+    delta_fraction: float = 0.7  # finish annealing after 80 % of training
+    lambda_lr: float = 1e-3            # step size for dual variable λ
+    lambda_init: float = 0.0
+    lambda_decay: float = 1e-3
+
+
+def kl_categorical_vs_uniform(p, n):
+    if not (0 < p < 1):
+        raise ValueError("p must be in (0,1)")
+    if n < 2:
+        raise ValueError("n must be at least 2")
+    term1 = p * np.log(p * n)
+    term2 = (1 - p) * np.log((1 - p) * n / (n - 1))
+    return term1 + term2
+
+
+def diagonal_hinge_kl_loss(logstd, logstd_max, delta):
+    var = torch.exp(2 * logstd)
+    var_max = torch.exp(2 * logstd_max)
+    dim = logstd.size(-1)
+    kl = 0.5 * (torch.sum(var / var_max, dim=-1) + 2 * torch.sum(logstd_max - logstd, dim=-1) - dim)
+    violation = F.relu(kl - delta)
+    return violation.mean(), kl
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -102,6 +126,31 @@ class SoftQNetwork(nn.Module):
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
+
+
+def kl_to_max_entropy(log_std: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the KL divergence between each diagonal Gaussian
+      P = N(mean, σ^2)    with σ = exp(log_std)
+    and the maximum‐entropy Gaussian
+      Q = N(mean, σ_max^2) with σ_max = exp(LOG_STD_MAX).
+
+    Args:
+        log_std: Tensor of shape [..., action_dim]
+
+    Returns:
+        kl: Tensor of shape [...] containing the KL(P||Q) per sample.
+    """
+    # current std
+    sigma = torch.exp(log_std)
+    # max‐entropy std
+    sigma_max = torch.exp(torch.tensor(LOG_STD_MAX, device=log_std.device))
+    # KL per dimension: log(σ_max/σ) + (σ^2)/(2 σ_max^2) − 1/2
+    term1 = LOG_STD_MAX - log_std
+    term2 = (sigma.pow(2)) / (2 * sigma_max.pow(2))
+    kl_per_dim = term1 + term2 - 0.5
+    # sum over action dimensions
+    return kl_per_dim.sum(dim=-1)
 
 
 class Actor(nn.Module):
@@ -151,6 +200,59 @@ class Actor(nn.Module):
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
 
+    def sample_actions(self, x: torch.Tensor, n: int):
+        """
+        Given a batch of states x (shape [B, obs_dim]), sample n actions per state.
+        Returns:
+          actions_flat: Tensor of shape [B*n, action_dim]
+          log_probs_flat: Tensor of shape [B*n, 1]
+        """
+        B = x.shape[0]
+        # get policy parameters
+        mean, log_std = self(x)                    # both [B, action_dim]
+        std_const = log_std.exp()
+
+        # expand to [B, n, action_dim]
+        mean_exp = mean.unsqueeze(1).expand(-1, n, -1)
+        std_exp  = std_const.unsqueeze(1).expand(-1, n, -1)
+
+        # sample
+        normal = torch.distributions.Normal(mean_exp, std_exp)
+        x_t = normal.rsample()                     # [B, n, action_dim]
+        y_t = torch.tanh(x_t)
+
+        # rescale to action space
+        actions = y_t * self.action_scale + self.action_bias
+
+        # log prob with tanh correction
+        log_prob = normal.log_prob(x_t)
+        log_prob = log_prob - torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+        log_prob = log_prob.sum(-1, keepdim=True)  # [B, n, 1]
+
+        # flatten to [B*n, ...]
+        actions_flat = actions.view(B * n, -1)
+        log_probs_flat = log_prob.view(B * n, 1)
+
+        return actions_flat, log_probs_flat, mean, log_std
+
+
+def delta_schedule(
+    step: int,
+    total_steps: int,
+    delta_min: float,
+    delta_max: float,
+    power: float = 3.0,        # 1.0 → linear, >1.0 → slow-start, <1.0 → fast-start
+) -> float:
+    """
+    Interpolates between `delta_min` (t=0) and `delta_max` (t=1) with a
+    power-law on the *fraction of remaining entropy*.
+
+        s = (step / total_steps) ** power
+        return delta_min + (delta_max - delta_min) * s
+    """
+    s = (step / total_steps) ** power
+    return delta_min + (delta_max - delta_min) * s
+
 
 if __name__ == "__main__":
     import stable_baselines3 as sb3
@@ -176,7 +278,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs_temporary/{run_name}")
+    writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -199,6 +301,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     max_action = float(envs.single_action_space.high[0])
 
     actor = Actor(envs).to(device)
+
     qf1 = SoftQNetwork(envs).to(device)
     qf2 = SoftQNetwork(envs).to(device)
     qf1_target = SoftQNetwork(envs).to(device)
@@ -208,14 +311,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
-    # Automatic entropy tuning
-    if args.autotune:
-        target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
-        log_alpha = torch.zeros(1, requires_grad=True, device=device)
-        alpha = log_alpha.exp().item()
-        a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
-    else:
-        alpha = args.alpha
+    lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
 
     envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(
@@ -227,10 +323,29 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         handle_timeout_termination=False,
     )
     start_time = time.time()
+    progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
+    latest_return = None
+    episode_returns = []
+    episodic_lengths = []
+    buffer_size = args.buffer_size
+
+    action_dim = envs.single_action_space.shape[0]
+    max_logstd_vec = torch.full((action_dim,), LOG_STD_MAX)
+    min_logstd_vec = torch.full((action_dim,), LOG_STD_MIN)
+
+    alpha = args.alpha  # softmax temperature
+    delta_start = kl_categorical_vs_uniform(args.delta_start, args.action_sampling)
+    delta_end = kl_categorical_vs_uniform(args.delta_end, args.action_sampling)
+    beta_start = kl_to_max_entropy(max_logstd_vec).item()
+    beta_end = kl_to_max_entropy(min_logstd_vec).item()
+    beta_fraction = args.delta_fraction
+    delta_fraction = args.delta_fraction
+    print(f"KL start bound: {delta_start}")
+    print(f"KL end bound: {delta_end}")
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
-    for global_step in range(args.total_timesteps):
+    for global_step in progress_bar:
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -244,11 +359,23 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in infos:
             for info in infos["final_info"]:
-                if info is not None:
-                    print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                    break
+                # Skip the envs that are not done
+                if "episode" not in info:
+                    continue
+                episodic_return = info["episode"]["r"]
+                episodic_length = info["episode"]["l"]
+                latest_return = episodic_return
+                writer.add_scalar(f"charts/episodic_return", episodic_return, global_step)
+                writer.add_scalar(f"charts/episodic_length", episodic_length, global_step)
+
+                episode_returns.append(episodic_return)
+                episodic_lengths.append(episodic_length)
+                if sum(episodic_lengths) > buffer_size:
+                    episode_returns.pop(0)
+                    episodic_lengths.pop(0)
+                avg_return = sum(episode_returns) / len(episode_returns)
+                writer.add_scalar(f"charts/episodic_return_avg", avg_return, global_step)
+                break
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
@@ -262,12 +389,14 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            beta_t = min(beta_end, beta_start + (beta_end - beta_start)
+                         * min(1.0, global_step / (beta_fraction * args.total_timesteps)))
             data = rb.sample(args.batch_size)
             with torch.no_grad():
                 next_state_actions, next_state_log_pi, _ = actor.get_action(data.next_observations)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 qf2_next_target = qf2_target(data.next_observations, next_state_actions)
-                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
                 next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1)
 
             qf1_a_values = qf1(data.observations, data.actions).view(-1)
@@ -284,28 +413,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(
                     args.policy_frequency
-                ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
+                ):
                     pi, log_pi, log_std = actor.get_action(data.observations)
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
-                    actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
+                    actor_loss = (-min_qf_pi).mean()
 
-                    entropy = (-log_pi).mean().item()
+                    expanded_log_std_max = torch.full_like(log_std, LOG_STD_MAX)
+                    hinge_actor_std_loss, kl = diagonal_hinge_kl_loss(log_std, expanded_log_std_max, beta_t)
 
                     actor_optimizer.zero_grad()
-                    actor_loss.backward()
+                    (actor_loss + hinge_actor_std_loss).backward()
                     actor_optimizer.step()
-
-                    if args.autotune:
-                        with torch.no_grad():
-                            _, log_pi, _ = actor.get_action(data.observations)
-                        alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
-
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -325,16 +445,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/mean_entropy", avg_entropy, global_step)
+                writer.add_scalar(f"charts/delta", beta_t, global_step)
+                writer.add_scalar(f"charts/kl_mean", kl.mean().item(), global_step)
+                writer.add_scalar(f"losses/hinge_loss", hinge_actor_std_loss.item(), global_step)
+                writer.add_scalar(f"charts/lambda", lambda_param.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
-                print("SPS:", int(global_step / (time.time() - start_time)))
-                writer.add_scalar(
-                    "charts/SPS",
-                    int(global_step / (time.time() - start_time)),
-                    global_step,
-                )
-                if args.autotune:
-                    writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                sps = int(global_step / (time.time() - start_time))
+                writer.add_scalar(f"charts/SPS", sps, global_step)
+
+                progress_bar.set_postfix({
+                    "step": global_step,
+                    "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
+                    "sps": sps
+                })
 
     envs.close()
     writer.close()
