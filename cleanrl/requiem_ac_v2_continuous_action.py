@@ -14,6 +14,7 @@ import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
+import math
 
 
 @dataclass
@@ -62,8 +63,8 @@ class Args:
     """the frequency of updates for the target nerworks"""
     alpha: float = 0.02
     """Entropy regularization coefficient."""
-    action_sampling = 20
-    delta_start: float = 0.6  # very exploratory at the beginning
+    action_sampling = 30
+    delta_start: float = 0.3  # very exploratory at the beginning
     delta_end: float = 0.99999
     delta_fraction: float = 0.7  # finish annealing after 80 % of training
     lambda_lr: float = 1e-3            # step size for dual variable λ
@@ -202,11 +203,13 @@ class Actor(nn.Module):
         B = x.shape[0]
         # get policy parameters
         mean, log_std = self(x)                    # both [B, action_dim]
-        std = log_std.exp()                        # [B, action_dim]
+
+        log_std_const = torch.full_like(mean, LOG_STD_MAX, device=mean.device)
+        std_const = log_std_const.exp()
 
         # expand to [B, n, action_dim]
         mean_exp = mean.unsqueeze(1).expand(-1, n, -1)
-        std_exp  = std .unsqueeze(1).expand(-1, n, -1)
+        std_exp  = std_const.unsqueeze(1).expand(-1, n, -1)
 
         # sample
         normal = torch.distributions.Normal(mean_exp, std_exp)
@@ -222,10 +225,10 @@ class Actor(nn.Module):
         log_prob = log_prob.sum(-1, keepdim=True)  # [B, n, 1]
 
         # flatten to [B*n, ...]
-        actions_flat   = actions.view(B * n, -1)
+        actions_flat = actions.view(B * n, -1)
         log_probs_flat = log_prob.view(B * n, 1)
 
-        return actions_flat, log_probs_flat
+        return actions_flat, log_probs_flat, mean, log_std
 
 
 def delta_schedule(
@@ -293,6 +296,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     max_action = float(envs.single_action_space.high[0])
 
     actor = Actor(envs).to(device)
+
+    std_params = list(actor.fc_logstd.parameters())
+    policy_params = [p for p in actor.parameters() if all(p is not sp for sp in actor.fc_logstd.parameters())]
+
     qf1 = SoftQNetwork(envs).to(device)
     qf2 = SoftQNetwork(envs).to(device)
     qf1_target = SoftQNetwork(envs).to(device)
@@ -300,7 +307,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     qf1_target.load_state_dict(qf1.state_dict())
     qf2_target.load_state_dict(qf2.state_dict())
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+    actor_optimizer = optim.Adam(policy_params, lr=args.policy_lr)
+    std_optimizer = optim.Adam(std_params, lr=args.policy_lr)
 
     lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
 
@@ -399,10 +407,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             # repeat each state K times
             obs_rep = data.observations.unsqueeze(1).repeat(1, K, 1).view(B * K, -1)
             # sample K actions per state
-            actions_rep, logp_rep = actor.sample_actions(data.observations, args.action_sampling)
+            actions_rep, logp_rep, mean_current, _ = actor.sample_actions(data.observations, args.action_sampling)
             # compute Q-values
-            q1_rep = qf1(obs_rep, actions_rep).view(B, K)
-            q2_rep = qf2(obs_rep, actions_rep).view(B, K)
+            q1_rep = qf1(obs_rep, actions_rep.detach()).view(B, K)
+            q2_rep = qf2(obs_rep, actions_rep.detach()).view(B, K)
             q_rep = torch.min(q1_rep, q2_rep)
             # form a discrete distribution over the K Q’s
             p = torch.softmax(q_rep / args.alpha, dim=1)  # shape [B, K]
@@ -428,17 +436,33 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 for _ in range(
                     args.policy_frequency
                 ):
-                    pi, log_pi, _ = actor.get_action(data.observations)
+                    pi, log_pi, log_std = actor.get_action(data.observations)
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
                     actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
-
                     entropy = (-log_pi).mean().item()
 
+                    # ── 2. fresh sampling for σ-loss  ───────────────────────────
+                    actions_rep, _, mean_current, log_std_pred = actor.sample_actions(
+                        data.observations, args.action_sampling
+                    )
+                    a = actions_rep.reshape(B, K, -1)
+                    mu = mean_current[:, None, :].detach()
+                    diff2 = (a - mu).pow(2)
+                    q1_rep = qf1(obs_rep, actions_rep).view(B, K)
+                    q2_rep = qf2(obs_rep, actions_rep).view(B, K)
+                    p = torch.softmax(torch.min(q1_rep, q2_rep) / alpha, dim=1)
+                    sigma2_hat = (p.unsqueeze(-1) * diff2).sum(dim=1)
+                    target_log_std = 0.5 * torch.log(sigma2_hat + 1e-8)
+                    std_loss = F.mse_loss(log_std_pred, target_log_std.detach())
+
+                    # ── 3. optimise both heads together  ───────────────────────
                     actor_optimizer.zero_grad()
-                    actor_loss.backward()
-                    actor_optimizer.step()
+                    std_optimizer.zero_grad()
+                    (actor_loss + std_loss).backward()
+                    std_optimizer.step()  # only fc_logstd params here
+                    actor_optimizer.step()  # trunk + mean head
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -448,12 +472,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             if global_step % 100 == 0:
+                const = 0.5 * (1.0 + math.log(2 * math.pi))
+                entropy_per_dim = log_std + const  # [B, action_dim]
+                entropy_per_sample = entropy_per_dim.sum(dim=-1)  # [B]
+                avg_entropy = entropy_per_sample.mean()
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/mean_entropy", entropy, global_step)
+                writer.add_scalar("losses/mean_entropy", avg_entropy, global_step)
                 writer.add_scalar(f"charts/delta", delta_t, global_step)
                 writer.add_scalar(f"charts/kl_mean", kl.mean().item(), global_step)
                 writer.add_scalar(f"losses/hinge_loss", hinge_mean.item(), global_step)
