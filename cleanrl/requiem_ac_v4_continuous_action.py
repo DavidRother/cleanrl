@@ -278,7 +278,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs_requiem_continuous/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -340,8 +340,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     beta_end = kl_to_max_entropy(min_logstd_vec).item()
     beta_fraction = args.delta_fraction
     delta_fraction = args.delta_fraction
-    print(f"KL start bound: {delta_start}")
-    print(f"KL end bound: {delta_end}")
+    print(f"KL start bound: {beta_start}")
+    print(f"KL end bound: {beta_end}")
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
