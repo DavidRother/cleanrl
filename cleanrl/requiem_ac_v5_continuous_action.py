@@ -37,7 +37,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Ant-v4"
+    env_id: str = "HalfCheetah-v4"
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -200,6 +200,27 @@ class Actor(nn.Module):
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
 
+    def get_action_training(self, x):
+        mean, log_std = self(x)
+        std = log_std.exp()
+        expanded_log_std_max = torch.full_like(log_std, LOG_STD_MAX)
+        std_max = expanded_log_std_max.exp()
+        normal = torch.distributions.Normal(mean, std)
+        normal_max = torch.distributions.Normal(mean, std_max)
+        x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
+        y_t = torch.tanh(x_t)
+        action = y_t * self.action_scale + self.action_bias
+        log_prob = normal.log_prob(x_t)
+        # Enforcing Action Bound
+        log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+        log_prob = log_prob.sum(1, keepdim=True)
+        mean = torch.tanh(mean) * self.action_scale + self.action_bias
+
+        log_prob_max = normal_max.log_prob(x_t)
+        log_prob_max -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+        log_prob_max = log_prob_max.sum(1, keepdim=True)
+        return action, log_prob, mean, log_prob_max
+
     def sample_actions(self, x: torch.Tensor, n: int):
         """
         Given a batch of states x (shape [B, obs_dim]), sample n actions per state.
@@ -311,6 +332,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
+    target_entropy = -torch.prod(torch.Tensor(envs.single_action_space.shape).to(device)).item()
+    log_alpha = torch.zeros(1, requires_grad=True, device=device)
+    alpha = log_alpha.exp().item()
+    a_optimizer = optim.Adam([log_alpha], lr=args.q_lr)
+
     lambda_param = torch.tensor(args.lambda_init, dtype=torch.float32, device=device)
 
     envs.single_observation_space.dtype = np.float32
@@ -414,18 +440,27 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 for _ in range(
                     args.policy_frequency
                 ):
-                    pi, log_pi, log_std = actor.get_action(data.observations)
+                    pi, log_pi, log_std, log_pi_max = actor.get_action_training(data.observations)
                     qf1_pi = qf1(data.observations, pi)
                     qf2_pi = qf2(data.observations, pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
                     actor_loss = (alpha * log_pi - min_qf_pi).mean()
+                    kl_loss = ((log_pi - log_pi_max.detach()).mean() - beta_t).clamp(min=0.0)
 
-                    expanded_log_std_max = torch.full_like(log_std, LOG_STD_MAX)
-                    hinge_actor_std_loss, kl = diagonal_hinge_kl_loss(log_std, expanded_log_std_max, beta_t)
+                    combined_loss = actor_loss + kl_loss
 
                     actor_optimizer.zero_grad()
-                    (actor_loss + hinge_actor_std_loss).backward()
+                    combined_loss.backward()
                     actor_optimizer.step()
+
+                    with torch.no_grad():
+                        _, log_pi, _ = actor.get_action(data.observations)
+                    alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
+
+                    a_optimizer.zero_grad()
+                    alpha_loss.backward()
+                    a_optimizer.step()
+                    alpha = log_alpha.exp().item()
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -435,10 +470,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             if global_step % 100 == 0:
-                const = 0.5 * (1.0 + math.log(2 * math.pi))
-                entropy_per_dim = log_std + const  # [B, action_dim]
-                entropy_per_sample = entropy_per_dim.sum(dim=-1)  # [B]
-                avg_entropy = entropy_per_sample.mean()
+                avg_entropy = (-log_pi).mean()
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
@@ -446,8 +478,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/mean_entropy", avg_entropy, global_step)
                 writer.add_scalar(f"charts/delta", beta_t, global_step)
-                writer.add_scalar(f"charts/kl_mean", kl.mean().item(), global_step)
-                writer.add_scalar(f"losses/hinge_loss", hinge_actor_std_loss.item(), global_step)
+                writer.add_scalar(f"losses/hinge_loss",kl_loss.item(), global_step)
                 writer.add_scalar(f"charts/lambda", lambda_param.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
