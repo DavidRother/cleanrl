@@ -447,7 +447,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     actor_loss = (alpha * log_pi - min_qf_pi).mean()
                     kl_loss = ((log_pi - log_pi_max.detach()).mean() - beta_t).clamp(min=0.0)
 
-                    combined_loss = actor_loss + kl_loss
+                    combined_loss = actor_loss
 
                     actor_optimizer.zero_grad()
                     combined_loss.backward()
@@ -478,7 +478,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
                 writer.add_scalar("losses/mean_entropy", avg_entropy, global_step)
                 writer.add_scalar(f"charts/delta", beta_t, global_step)
-                writer.add_scalar(f"losses/hinge_loss",kl_loss.item(), global_step)
+                writer.add_scalar(f"losses/hinge_loss", kl_loss.item(), global_step)
                 writer.add_scalar(f"charts/lambda", lambda_param.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)

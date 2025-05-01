@@ -369,7 +369,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     probs = F.softmax(q_pred / args.alpha, dim=1)
                     entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)
                     kl_batch = logA - entropy
-                    kl_loss = (kl_batch - delta_t).clamp(min=0.0).mean()
+                    kl_loss = (kl_batch - delta_t).mean()
                     primal_loss = td_loss + alpha * kl_loss
 
                     optimizer.zero_grad()
