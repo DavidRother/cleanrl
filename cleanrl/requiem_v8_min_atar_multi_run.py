@@ -50,7 +50,7 @@ class Args:
     """the user or org name of the model repository from the Hugging Face Hub"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -74,10 +74,8 @@ class Args:
     """the frequency of training"""
     alpha: float = 0.02  # softmax temperature
     delta_start: float = 0.5  # very exploratory at the beginning
-    delta_end: float = 0.99999
-    delta_fraction: float = 0.7  # finish annealing after 80 % of training
-    lambda_lr: float = 1e-3            # step size for dual variable λ
-    lambda_init: float = 0.0
+    delta_end: float = 0.8
+    delta_fraction: float = 1.0  # finish annealing after 80 % of training
 
 
 def kl_categorical_vs_uniform(p, n):
@@ -369,14 +367,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     probs = F.softmax(q_pred / args.alpha, dim=1)
                     entropy = -(probs * torch.log(probs + 1e-12)).sum(dim=1)
                     kl_batch = logA - entropy
-                    kl_loss = (kl_batch - delta_t).clamp(min=0.0).mean()
+                    kl_loss = (kl_batch - delta_t).mean()
                     primal_loss = td_loss + alpha * kl_loss
 
                     optimizer.zero_grad()
                     primal_loss.backward()
                     optimizer.step()
 
-                    alpha_loss = (-log_alpha.exp() * (delta_t - kl_batch).detach().clamp(min=0.0)).mean()
+                    alpha_loss = (-log_alpha.exp() * (delta_t - kl_batch).detach()).mean()
 
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
