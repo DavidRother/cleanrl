@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Seaquest-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -402,6 +402,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/lambda_L", lambda_L.item(), global_step)
                     writer.add_scalar(f"{run_prefix}/charts/lambda_U", lambda_U.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/H_min_curr", H_min_curr, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/H_max_curr", H_max_curr, global_step)
 
                     progress_bar.set_postfix({
                         "step": global_step,
