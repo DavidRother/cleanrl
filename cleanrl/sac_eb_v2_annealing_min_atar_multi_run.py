@@ -378,8 +378,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     actor_optimizer.step()
 
                     entropy_batch = (-action_probs * log_pi).sum(dim=1).mean().item()
-                    lambda_L = torch.clamp(lambda_L + args.lambda_lr * (H_min_curr - entropy_batch), min=0.0)
-                    lambda_U = torch.clamp(lambda_U + args.lambda_lr * (entropy_batch - H_max_curr), min=0.0)
+                    if entropy_batch > H_min_curr:
+                        lambda_L.fill_(0.0)
+                    else:
+                        lambda_L = torch.clamp(lambda_L + args.lambda_lr * (H_min_curr - entropy_batch), min=0.0)
+                    if entropy_batch < H_max_curr:
+                        lambda_U.fill_(0.0)
+                    else:
+                        lambda_U = torch.clamp(lambda_U + args.lambda_lr * (entropy_batch - H_max_curr), min=0.0)
                     alpha = (lambda_L - lambda_U).item()
 
                 # update the target networks
