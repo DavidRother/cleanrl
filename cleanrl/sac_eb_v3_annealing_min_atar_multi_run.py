@@ -44,11 +44,11 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "MinAtar/SpaceInvaders-v1"
     """the id of the environment"""
+    buffer_size: int = int(1e5)
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
-    buffer_size: int = int(1e5)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
     gamma: float = 0.99
     """the discount factor gamma"""
