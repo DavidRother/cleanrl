@@ -65,7 +65,7 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_min: float = -10.0
+    target_entropy_min: float = -15.0
     target_entropy_max: float = -0.1
     curvature_ema_beta: float = 0.01
     curvature_meta_lr: float = 1e-4
@@ -76,6 +76,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            env = gym.wrappers.NormalizeReward(env)
         else:
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -313,7 +314,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     # 3) meta‐step on target entropy H
                     delta_H = - args.curvature_meta_lr * (C_cur - C_target)
                     H = float(np.clip(H + delta_H, args.target_entropy_min, args.target_entropy_max))
-                    # target_entropy = H
+                    target_entropy = H
                     writer.add_scalar("meta/Fisher_trace", C_cur, global_step)
                     writer.add_scalar("meta/C_target", C_target, global_step)
                     writer.add_scalar("meta/target_entropy_adopted", H, global_step)
