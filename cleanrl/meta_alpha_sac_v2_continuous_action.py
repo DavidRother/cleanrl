@@ -68,7 +68,8 @@ class Args:
     target_entropy_min: float = -15.0
     target_entropy_max: float = -0.1
     curvature_ema_beta: float = 0.01
-    curvature_meta_lr: float = 1e-6
+    curvature_meta_lr: float = 1e-4
+    meta_update: int = 500
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -305,19 +306,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     # ────────── curvature‐based meta‐update of target_entropy ──────────
                     # 1) estimate Fisher‐trace: E[‖∇θ logπ(a|s)‖²]
                     # here we reuse log_pi from the last forward
-                    grads = torch.autograd.grad(log_pi.sum(), actor.parameters(), retain_graph=True)
-                    flat = torch.cat([g.view(-1) for g in grads])
-                    C_cur = (flat.pow(2).sum() / flat.numel()).item()  # per‐param average, or remove /numel for full trace
+                    if (global_step % args.meta_update) == 0:
+                        grads = torch.autograd.grad(log_pi.sum(), actor.parameters(), retain_graph=True)
+                        flat = torch.cat([g.view(-1) for g in grads])
+                        C_cur = (flat.pow(2).sum() / flat.numel()).item()  # per‐param average, or remove /numel for full trace
 
-                    # 2) update EMA of target curvature C_target
-                    C_target = (1 - args.curvature_ema_beta) * C_target + args.curvature_ema_beta * C_cur
-                    # 3) meta‐step on target entropy H
-                    delta_H = - args.curvature_meta_lr * (C_cur - C_target)
-                    H = float(np.clip(H + delta_H, args.target_entropy_min, args.target_entropy_max))
-                    target_entropy = H
-                    writer.add_scalar("meta/Fisher_trace", C_cur, global_step)
-                    writer.add_scalar("meta/C_target", C_target, global_step)
-                    writer.add_scalar("meta/target_entropy_adopted", H, global_step)
+                        # 2) update EMA of target curvature C_target
+                        C_target = (1 - args.curvature_ema_beta) * C_target + args.curvature_ema_beta * C_cur
+                        # 3) meta‐step on target entropy H
+                        delta_H = - args.curvature_meta_lr * (C_cur - C_target)
+                        H = float(np.clip(H + delta_H, args.target_entropy_min, args.target_entropy_max))
+                        target_entropy = H
+                        writer.add_scalar("meta/Fisher_trace", C_cur, global_step)
+                        writer.add_scalar("meta/C_target", C_target, global_step)
+                        writer.add_scalar("meta/target_entropy_adopted", H, global_step)
 
                     actor_optimizer.zero_grad()
                     actor_loss.backward()

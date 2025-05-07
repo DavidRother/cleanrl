@@ -234,6 +234,18 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     )
     start_time = time.time()
     progress_bar = tqdm.trange(args.total_timesteps, desc=f"Training {args.env_id}", dynamic_ncols=True)
+    fisher_ema = None
+    kappa_min = 100000
+    kappa_max = -100000
+    mean_kappa = 0
+    mean_sq = 0
+    z_kappa_ema = None
+    tau_z = 0.001
+    H_low, H_high = args.target_entropy_min, args.target_entropy_max
+    z_range = 3.0  # assume ±3σ covers most z values
+    H_mid = 0.5 * (args.target_entropy_min + args.target_entropy_max)
+    z_gain = (H_high - H_low) / (2 * z_range)  # slope
+    z_bias = H_mid  # intercept
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -285,6 +297,46 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
+            min_q_vals = torch.min(qf1_a_values, qf2_a_values)
+            proxy_scalar = min_q_vals.sum()
+            params = list(qf1.parameters()) + list(qf2.parameters())
+            grads = torch.autograd.grad(proxy_scalar, params, create_graph=True)
+            squared_norm = sum((g ** 2).sum() for g in grads)
+            fisher_proxy = squared_norm / data.observations.size(0)
+            fisher_proxy_val = fisher_proxy.detach().item()
+            tau = 0.01  # e.g. 0.01 or 0.05
+            # initialize fisher_ema = hat_kappa on the very first step
+            if not fisher_ema:
+                fisher_ema = fisher_proxy_val
+            fisher_ema = (1 - tau) * fisher_ema + tau * fisher_proxy_val
+
+            kappa_min = min(kappa_min, fisher_ema)
+            kappa_max = max(kappa_max, fisher_ema)
+            mean_kappa = (1 - tau) * mean_kappa + tau * fisher_ema
+            mean_sq = (1 - tau) * mean_sq + tau * fisher_ema ** 2
+            std_kappa = math.sqrt(max(1e-8, mean_sq - mean_kappa ** 2))
+
+            tilde_kappa = (fisher_ema - kappa_min) / (kappa_max - kappa_min + 1e-8)
+            z_kappa_raw = (fisher_ema - mean_kappa) / (std_kappa + 1e-8)
+
+            # 5) EMA-smooth the z-score
+            if z_kappa_ema is None:
+                z_kappa_ema = z_kappa_raw
+            else:
+                z_kappa_ema = (1 - tau_z) * z_kappa_ema + tau_z * z_kappa_raw
+
+            target_entropy = max(min(target_entropy - 0.01 * z_kappa_ema, H_high), H_low)
+
+            # target_entropy = torch.clamp(fisher_ema, args.target_entropy_min, args.target_entropy_max)
+
+            writer.add_scalar("meta/fisher_proxy", fisher_proxy_val, global_step)
+            writer.add_scalar("meta/proxy_scalar", proxy_scalar.item(), global_step)
+            writer.add_scalar("meta/mean_kappa", mean_kappa, global_step)
+            writer.add_scalar("meta/fisher_ema", fisher_ema, global_step)
+            writer.add_scalar("meta/z_kappa", z_kappa_raw, global_step)
+            writer.add_scalar("meta/z_kappa_ema", z_kappa_ema, global_step)
+            writer.add_scalar("meta/z_kappa_push_factor", 0.01 * z_kappa_ema, global_step)
+
             # optimize the model
             q_optimizer.zero_grad()
             qf_loss.backward()
@@ -301,23 +353,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
 
                     entropy = (-log_pi).mean().item()
-
-                    # ────────── curvature‐based meta‐update of target_entropy ──────────
-                    # 1) estimate Fisher‐trace: E[‖∇θ logπ(a|s)‖²]
-                    # here we reuse log_pi from the last forward
-                    grads = torch.autograd.grad(log_pi.sum(), actor.parameters(), retain_graph=True)
-                    flat = torch.cat([g.view(-1) for g in grads])
-                    C_cur = (flat.pow(2).sum() / flat.numel()).item()  # per‐param average, or remove /numel for full trace
-
-                    # 2) update EMA of target curvature C_target
-                    C_target = (1 - args.curvature_ema_beta) * C_target + args.curvature_ema_beta * C_cur
-                    # 3) meta‐step on target entropy H
-                    delta_H = - args.curvature_meta_lr * (C_cur - C_target)
-                    H = float(np.clip(H + delta_H, args.target_entropy_min, args.target_entropy_max))
-                    target_entropy = H
-                    writer.add_scalar("meta/Fisher_trace", C_cur, global_step)
-                    writer.add_scalar("meta/C_target", C_target, global_step)
-                    writer.add_scalar("meta/target_entropy_adopted", H, global_step)
 
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
