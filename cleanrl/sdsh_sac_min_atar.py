@@ -143,13 +143,17 @@ class SoftQNetwork(nn.Module):
 
         self.fc1 = layer_init(nn.Linear(output_dim, 128))
         self.fc_q = layer_init(nn.Linear(128, envs.single_action_space.n))
+        self.fc_h = layer_init(nn.Linear(128, envs.single_action_space.n))
+        self.fc_alpha = layer_init(nn.Linear(128, envs.single_action_space.n))
 
     def forward(self, x):
         x = torch.as_tensor(x, dtype=torch.float32, device=device)
         x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         q_vals = self.fc_q(x)
-        return q_vals
+        ent_vals = self.fc_h(x)
+        alpha_vals = self.fc_alpha(x)
+        return q_vals, ent_vals, alpha_vals
 
 
 class Actor(nn.Module):
@@ -321,18 +325,24 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 # CRITIC training
                 with torch.no_grad():
                     _, next_log_pi, next_probs = actor.get_action(data.next_observations)
-                    q1_next = qf1_target(data.next_observations)
-                    q2_next = qf2_target(data.next_observations)
+                    q1_next, ent1_next, alpha1_next = qf1_target(data.next_observations)
+                    q2_next, ent2_next, alpha2_next = qf2_target(data.next_observations)
                     avg_q_next = (q1_next + q2_next) * 0.5  # ← AVG
-                    soft_q_next = (next_probs * (avg_q_next - alpha * next_log_pi)).sum(1)
+                    avg_alpha_next = (alpha1_next + alpha2_next) * 0.5
+                    avg_ent_next = (ent1_next + ent2_next) * 0.5
+                    soft_q_next = (next_probs * avg_q_next).sum(1)
                     target = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * soft_q_next
+                    target_ent = -avg_alpha_next * next_log_pi + (1 - data.dones.flatten()) * args.gamma * avg_ent_next
+                    target_alpha = 1
                     # ---- Q‑clip (Eq.17) ----
                     q1_pred = qf1(data.observations).gather(1, data.actions.long()).squeeze()
                     clip_target = q1_pred + (target - q1_pred).clamp(-args.q_clip, args.q_clip)
 
+
+
                 # use Q-values only for the taken actions
-                qf1_values = qf1(data.observations)
-                qf2_values = qf2(data.observations)
+                qf1_values, ent1, alpha1 = qf1(data.observations)
+                qf2_values, ent2, alpha2 = qf2(data.observations)
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
                 qf1_loss = F.mse_loss(qf1_a_values, clip_target)
