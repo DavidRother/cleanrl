@@ -349,9 +349,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 actor_loss.backward()
                 actor_optimizer.step()
 
+                probs_with_bonus = torch.softmax(min_qf_values / alpha, dim=1)  # [B,A]
+
+                entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
+
                 if args.autotune:
                     # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (probs_with_bonus.log() + target_entropy).detach())).mean()
 
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
@@ -373,9 +377,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 # 4) Complementary‐slackness residual: r_cs = alpha * (H - H_target)
                 complementary_slackness = alpha * (entropy - target_entropy)
 
-                probs_with_bonus = torch.softmax(min_qf_values / alpha, dim=1)  # [B,A]
 
-                entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -385,10 +387,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
             if global_step % 100 == 0:
-                writer.add_scalar("residuals/primal_feasibility", primal_residual, global_step)
-                writer.add_scalar("residuals/dual_feasibility", dual_residual, global_step)
-                writer.add_scalar("residuals/stationarity", stationarity_residual, global_step)
-                writer.add_scalar("residuals/complementary_slackness", complementary_slackness, global_step)
                 writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)

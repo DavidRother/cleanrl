@@ -140,13 +140,15 @@ class SoftQNetwork(nn.Module):
 
         self.fc1 = layer_init(nn.Linear(output_dim, 128))
         self.fc_q = layer_init(nn.Linear(128, envs.single_action_space.n))
+        self.fc_ent = layer_init(nn.Linear(128, envs.single_action_space.n))
 
     def forward(self, x):
         x = torch.as_tensor(x, dtype=torch.float32, device=device)
         x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         q_vals = self.fc_q(x)
-        return q_vals
+        ent_vals = self.fc_ent(x)
+        return q_vals, ent_vals
 
 
 class Actor(nn.Module):
@@ -234,6 +236,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
+    ent_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
 
     # Automatic entropy tuning
     if args.autotune:
@@ -311,27 +314,41 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 # CRITIC training
                 with torch.no_grad():
                     _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
-                    qf1_next_target = qf1_target(data.next_observations)
-                    qf2_next_target = qf2_target(data.next_observations)
+                    qf1_next_target, ent_vals1_target = qf1_target(data.next_observations)
+                    qf2_next_target, ent_vals2_target = qf2_target(data.next_observations)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                        torch.min(qf1_next_target, qf2_next_target)
                     )
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
                     next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
 
+                    min_ent_next = torch.min(ent_vals1_target, ent_vals2_target)
+                    exp_ent_next = (next_state_action_probs * min_ent_next).sum(dim=1)
+                    ent_target = (alpha * (- next_state_log_pi * next_state_action_probs).mean(dim=1)
+                                  + (1 - data.dones.flatten()) * args.gamma * exp_ent_next).detach()
+
                 # use Q-values only for the taken actions
-                qf1_values = qf1(data.observations)
-                qf2_values = qf2(data.observations)
+                qf1_values, ent_vals1 = qf1(data.observations)
+                qf2_values, ent_vals2 = qf2(data.observations)
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
                 qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
                 qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
                 qf_loss = qf1_loss + qf2_loss
 
+                ent1_pred = ent_vals1.gather(1, data.actions.long()).view(-1)
+                ent2_pred = ent_vals2.gather(1, data.actions.long()).view(-1)
+
+                ent1_loss = F.mse_loss(ent1_pred, ent_target.clamp(max=next_q_value))
+                ent2_loss = F.mse_loss(ent2_pred, ent_target.clamp(max=next_q_value))
+                ent_loss = ent1_loss + ent2_loss
+
+                qf_ent_loss = qf_loss + ent_loss
+
                 q_optimizer.zero_grad()
-                qf_loss.backward()
+                qf_ent_loss.backward()
                 q_optimizer.step()
 
                 # ACTOR training
@@ -339,24 +356,24 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 policy_dist = Categorical(probs=action_probs)
                 entropy = policy_dist.entropy().mean().item()
                 with torch.no_grad():
-                    qf1_values = qf1(data.observations)
-                    qf2_values = qf2(data.observations)
+                    qf1_values, ent1_values = qf1(data.observations)
+                    qf2_values, ent2_values = qf2(data.observations)
                     min_qf_values = torch.min(qf1_values, qf2_values)
+                    min_ent_values = torch.min(ent1_values, ent2_values)
                 # no need for reparameterization, the expectation can be calculated for discrete actions
-                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
+                actor_loss = (action_probs * ((alpha * log_pi) - (min_qf_values + min_ent_values))).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
                 actor_optimizer.step()
 
-                if args.autotune:
-                    # re-use action probabilities for temperature loss
-                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                # re-use action probabilities for temperature loss
+                alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
 
-                    a_optimizer.zero_grad()
-                    alpha_loss.backward()
-                    a_optimizer.step()
-                    alpha = log_alpha.exp().item()
+                a_optimizer.zero_grad()
+                alpha_loss.backward()
+                a_optimizer.step()
+                alpha = log_alpha.exp().item()
 
                 primal_residual = max(0.0, target_entropy - entropy)
 
@@ -373,9 +390,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 # 4) Complementary‐slackness residual: r_cs = alpha * (H - H_target)
                 complementary_slackness = alpha * (entropy - target_entropy)
 
-                probs_with_bonus = torch.softmax(min_qf_values / alpha, dim=1)  # [B,A]
+                probs_no_bonus = torch.softmax(min_qf_values / alpha, dim=1)  # [B,A]
+                probs_with_bonus = torch.softmax((min_qf_values + min_ent_values) / alpha, dim=1)  # [B,A]
 
+                # average entropies over batch
+                entropy_no_bonus = -(probs_no_bonus * probs_no_bonus.log()).sum(dim=1).mean().item()
                 entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
+
+
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -394,8 +416,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
+                writer.add_scalar("losses/ent1_pred", ent1_pred.mean().item(), global_step)
+                writer.add_scalar("losses/ent2_pred", ent2_pred.mean().item(), global_step)
+                writer.add_scalar("losses/ent1_loss", ent1_loss.item(), global_step)
+                writer.add_scalar("losses/ent2_loss", ent2_loss.item(), global_step)
+                writer.add_scalar("losses/ent_loss", ent_loss.item() / 2.0, global_step)
+                writer.add_scalar("losses/q_entropy_no_bonus", entropy_no_bonus, global_step)
                 writer.add_scalar("losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
+                writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)

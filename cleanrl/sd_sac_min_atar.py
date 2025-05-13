@@ -45,7 +45,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -209,7 +209,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs_sd_sac/{run_name}")
+    writer = SummaryWriter(f"runs_split/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -373,6 +373,25 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     a_optimizer.step()
                     alpha = log_alpha.exp().item()
 
+                primal_residual = max(0.0, target_entropy - entropy)
+
+                # 2) Dual‐feasibility residual: r_d = max(0, -alpha)
+                dual_residual = max(0.0, -alpha)
+
+                # 3) Stationarity/subgradient residual:
+                #    if alpha>0: |H - H_target|, else: max(0, H_target - H)
+                if alpha > 0.0:
+                    stationarity_residual = abs(entropy - target_entropy)
+                else:
+                    stationarity_residual = max(0.0, target_entropy - entropy)
+
+                # 4) Complementary‐slackness residual: r_cs = alpha * (H - H_target)
+                complementary_slackness = alpha * (entropy - target_entropy)
+
+                probs_with_bonus = torch.softmax(avg_q_vals / alpha, dim=1)  # [B,A]
+
+                entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
+
             # update the target networks
             if global_step % args.target_network_frequency == 0:
                 for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
@@ -386,6 +405,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
+                writer.add_scalar("losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 sps = int(global_step / (time.time() - start_time))
