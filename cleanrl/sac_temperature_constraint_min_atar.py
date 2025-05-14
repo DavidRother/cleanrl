@@ -12,7 +12,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 import tqdm
-import math
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -20,7 +19,7 @@ from stable_baselines3.common.atari_wrappers import (
     MaxAndSkipEnv,
     NoopResetEnv,
 )
-from cleanrl_utils.custom_buffer import SDReplayBuffer as ReplayBuffer
+from stable_baselines3.common.buffers import ReplayBuffer
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -45,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/SpaceInvaders-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -73,8 +72,6 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
-    entropy_coef: float = 0.5         # λ in the paper
-    q_clip: float = 1.0
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -209,7 +206,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs_split/{run_name}")
+    writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -259,6 +256,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
     latest_return = None
     episode_returns = []
+    episode_lengths = []
+    avg_return_per_step = 0
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -266,19 +265,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-            entropy_now = torch.full((envs.num_envs, 1), math.log(envs.single_action_space.n), device=device,
-                                     dtype=torch.float32)
         else:
-            actions, log_pi, action_probs = actor.get_action(torch.Tensor(obs).to(device))
+            actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
-            entropy_now = - (action_probs * log_pi).sum(1, keepdim=True)
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
-
-        step_infos = [{} for _ in range(envs.num_envs)]
-        for idx in range(envs.num_envs):
-            step_infos[idx]["entropy"] = entropy_now[idx].cpu().detach().numpy()
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
         if "final_info" in infos:
@@ -294,10 +286,15 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                 # Track the average episodic return over the last 50 episodes
                 episode_returns.append(episodic_return)
+                episode_lengths.append(episodic_length)
                 if len(episode_returns) > 50:
                     episode_returns.pop(0)
+                    episode_lengths.pop(0)
                 avg_return = sum(episode_returns) / len(episode_returns)
+                avg_length = sum(episode_lengths) / len(episode_lengths)
                 writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
+
+                avg_return_per_step = torch.as_tensor(avg_return / avg_length, device=device)
 
                 # Track (episodic return / episodic length) minus the current alpha
                 adjusted_metric = avg_return - alpha
@@ -309,7 +306,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
             if trunc or term:
                 real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, step_infos)
+        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -320,23 +317,24 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
-                    _, next_log_pi, next_probs = actor.get_action(data.next_observations)
-                    q1_next = qf1_target(data.next_observations)
-                    q2_next = qf2_target(data.next_observations)
-                    avg_q_next = (q1_next + q2_next) * 0.5  # ← AVG
-                    soft_q_next = (next_probs * (avg_q_next - alpha * next_log_pi)).sum(1)
-                    target = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * soft_q_next
-                    # ---- Q‑clip (Eq.17) ----
-                    q1_pred = qf1(data.observations).gather(1, data.actions.long()).squeeze()
-                    clip_target = q1_pred + (target - q1_pred).clamp(-args.q_clip, args.q_clip)
+                    _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
+                    qf1_next_target = qf1_target(data.next_observations)
+                    qf2_next_target = qf2_target(data.next_observations)
+                    # we can use the action probabilities instead of MC sampling to estimate the expectation
+                    min_qf_next_target = next_state_action_probs * (
+                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi
+                    )
+                    # adapt Q-target for discrete Q-function
+                    min_qf_next_target = min_qf_next_target.sum(dim=1)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
 
                 # use Q-values only for the taken actions
                 qf1_values = qf1(data.observations)
                 qf2_values = qf2(data.observations)
                 qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
                 qf2_a_values = qf2_values.gather(1, data.actions.long()).view(-1)
-                qf1_loss = F.mse_loss(qf1_a_values, clip_target)
-                qf2_loss = F.mse_loss(qf2_a_values, clip_target)
+                qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+                qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
                 qf_loss = qf1_loss + qf2_loss
 
                 q_optimizer.zero_grad()
@@ -348,17 +346,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 policy_dist = Categorical(probs=action_probs)
                 entropy = policy_dist.entropy().mean().item()
                 with torch.no_grad():
-                    q1_vals = qf1(data.observations)
-                    q2_vals = qf2(data.observations)
-                    avg_q_vals = 0.5 * (q1_vals + q2_vals)
+                    qf1_values = qf1(data.observations)
+                    qf2_values = qf2(data.observations)
+                    min_qf_values = torch.min(qf1_values, qf2_values)
                 # no need for reparameterization, the expectation can be calculated for discrete actions
-                base_actor_loss = (action_probs * ((alpha * log_pi) - avg_q_vals)).sum(1).mean()
-
-                H_new = -(action_probs * log_pi).sum(1)
-                H_old = data.entropies.squeeze().to(device)
-                entropy_loss = F.mse_loss(H_new, H_old)
-
-                actor_loss = base_actor_loss + args.entropy_coef * entropy_loss
+                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
@@ -367,30 +359,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 if args.autotune:
                     # re-use action probabilities for temperature loss
                     alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
+                    alpha_violation_loss = (action_probs.detach() * (log_alpha.exp() * (log_pi - avg_return_per_step).detach())).clamp(min=0.0).mean()
+                    a_loss = alpha_violation_loss + alpha_loss
 
                     a_optimizer.zero_grad()
-                    alpha_loss.backward()
+                    a_loss.backward()
                     a_optimizer.step()
                     alpha = log_alpha.exp().item()
-
-                primal_residual = max(0.0, target_entropy - entropy)
-
-                # 2) Dual‐feasibility residual: r_d = max(0, -alpha)
-                dual_residual = max(0.0, -alpha)
-
-                # 3) Stationarity/subgradient residual:
-                #    if alpha>0: |H - H_target|, else: max(0, H_target - H)
-                if alpha > 0.0:
-                    stationarity_residual = abs(entropy - target_entropy)
-                else:
-                    stationarity_residual = max(0.0, target_entropy - entropy)
-
-                # 4) Complementary‐slackness residual: r_cs = alpha * (H - H_target)
-                complementary_slackness = alpha * (entropy - target_entropy)
-
-                probs_with_bonus = torch.softmax(avg_q_vals / alpha, dim=1)  # [B,A]
-
-                entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
 
             # update the target networks
             if global_step % args.target_network_frequency == 0:
@@ -405,14 +380,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
                 writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
                 writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                writer.add_scalar("losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
                 writer.add_scalar("losses/alpha", alpha, global_step)
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                writer.add_scalar("charts/old_entropy", H_old.mean().item(), global_step)
-                writer.add_scalar("charts/policy_entropy", H_new.mean().item(), global_step)
-                writer.add_scalar("losses/entropy_loss", entropy_loss.item(), global_step)
+                writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 
