@@ -72,6 +72,7 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+    bias: float = 0.1
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -315,7 +316,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf2_next_target = qf2_target(data.next_observations)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target)
+                        torch.min(qf1_next_target, qf2_next_target) + args.bias
                     )
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
