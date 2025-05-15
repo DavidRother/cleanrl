@@ -45,9 +45,9 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Seaquest-v1"
     """the id of the environment"""
-    total_timesteps: int = 500000
+    total_timesteps: int = 3000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
@@ -76,8 +76,8 @@ class Args:
     target_entropy_start_exploitation: float = 0.50
     """coefficient for scaling the autotune entropy target"""
     target_entropy_end_exploitation: float = 0.80
-    start_multiplicator: float = 10
-    steps_to_decay:float = 200000
+    start_multiplicator: float = 0.1
+    steps_to_decay: float = 1
 
 
 def target_entropy_from_exploitation_probability(p, n):
@@ -201,37 +201,6 @@ class Actor(nn.Module):
         return action, log_prob, action_probs
 
 
-def rescale_ent_target(f_ent_target: torch.Tensor, f_next_q_value: torch.Tensor) -> torch.Tensor:
-    """
-    Rescale ent_target so that its range [min, max] is linearly mapped
-    to the range [min(next_q_value), max(next_q_value)].
-
-    Args:
-        f_ent_target      (torch.Tensor): Tensor to be rescaled.
-        f_next_q_value    (torch.Tensor): Reference tensor whose min/max define the target range.
-
-    Returns:
-        torch.Tensor: A new tensor, same shape as ent_target, rescaled to lie between
-                      min(next_q_value) and max(next_q_value).
-    """
-    if f_ent_target.shape != f_next_q_value.shape:
-        raise ValueError(f"Shape mismatch: {f_ent_target.shape} vs {f_next_q_value.shape}")
-
-    et_min = f_ent_target.min()
-    et_max = f_ent_target.max()
-    nq_min = f_next_q_value.min()
-    nq_max = f_next_q_value.max()
-
-    # If ent_target is constant, just fill with the lower bound
-    if et_max == et_min:
-        return torch.full_like(f_ent_target, nq_min)
-
-    # normalize to [0,1]
-    normalized = (f_ent_target - et_min) / (et_max - et_min)
-    # scale to [nq_min, nq_max]
-    return normalized * (nq_max - nq_min) + nq_min
-
-
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -308,6 +277,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
     latest_return = None
     episode_returns = []
+    start_multiplicator = args.start_multiplicator
+    end_multiplicator = 1.0
+    mult_time = args.steps_to_decay
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
@@ -359,7 +331,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             if global_step % args.update_frequency == 0:
-
+                multiplicator = min(end_multiplicator, start_multiplicator + (end_multiplicator - start_multiplicator) *
+                                    min(1.0, global_step / mult_time))
                 data = rb.sample(args.batch_size)
                 # CRITIC training
                 with torch.no_grad():
@@ -368,7 +341,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf2_next_target, ent_vals2_target = qf2_target(data.next_observations)
                     # we can use the action probabilities instead of MC sampling to estimate the expectation
                     min_qf_next_target = next_state_action_probs * (
-                        torch.min(qf1_next_target, qf2_next_target)
+                        torch.min(qf1_next_target, qf2_next_target) - alpha * next_state_log_pi * multiplicator
                     )
                     # adapt Q-target for discrete Q-function
                     min_qf_next_target = min_qf_next_target.sum(dim=1)
@@ -391,13 +364,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 ent1_pred = ent_vals1.gather(1, data.actions.long()).view(-1)
                 ent2_pred = ent_vals2.gather(1, data.actions.long()).view(-1)
 
-                if ent_target.sum() > next_q_value.sum():
-                    ent_target_scaled = rescale_ent_target(ent_target, next_q_value)
-                else:
-                    ent_target_scaled = ent_target
-
-                ent1_loss = F.mse_loss(ent1_pred, ent_target_scaled)
-                ent2_loss = F.mse_loss(ent2_pred, ent_target_scaled)
+                ent1_loss = F.mse_loss(ent1_pred, ent_target.clamp(max=next_q_value))
+                ent2_loss = F.mse_loss(ent2_pred, ent_target.clamp(max=next_q_value))
                 ent_loss = ent1_loss + ent2_loss
 
                 qf_ent_loss = qf_loss + ent_loss
@@ -416,7 +384,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     min_qf_values = torch.min(qf1_values, qf2_values)
                     min_ent_values = torch.min(ent1_values, ent2_values)
                 # no need for reparameterization, the expectation can be calculated for discrete actions
-                actor_loss = (action_probs * ((alpha * log_pi) - (min_qf_values + min_ent_values))).mean()
+                actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
 
                 actor_optimizer.zero_grad()
                 actor_loss.backward()

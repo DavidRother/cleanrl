@@ -37,24 +37,17 @@ env_names = ["Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders"]
 # ---- for each env, the run‐dirs to search ----
 run_dirs_super_list = [
     [
-        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_multi_run",
-        f"../runs/MinAtar/{env}-v1__sac_min_atar_max_alpha_target_entropy_annealing_multi_run",
-        f"../runs/MinAtar/{env}-v1__sac_min_atar_target_entropy_annealing_multi_run",
         f"../runs/MinAtar/{env}-v1__sac_min_atar_multi_run",
     ]
     for env in env_names
 ]
 
-tag_list = ["episodic_return", "qf_loss", "qf1_values", "alpha_used", "mean_policy_entropy"]
+tag_list = ["episodic_return"]
 y_labels = {
     "episodic_return": "Episodic Return",
-    "qf_loss": "Q-Function Loss",
-    "qf1_values": "Q-Function Values",
-    "alpha_used": "Alpha Value",
-    "mean_policy_entropy": "Mean Policy Entropy",
 }
 
-identifier = "Comparison_max_alpha"
+identifier = "q_sac"
 
 output_dir = "../graphs"
 os.makedirs(output_dir, exist_ok=True)
