@@ -201,6 +201,37 @@ class Actor(nn.Module):
         return action, log_prob, action_probs
 
 
+def rescale_ent_target(f_ent_target: torch.Tensor, f_next_q_value: torch.Tensor) -> torch.Tensor:
+    """
+    Rescale ent_target so that its range [min, max] is linearly mapped
+    to the range [min(next_q_value), max(next_q_value)].
+
+    Args:
+        f_ent_target      (torch.Tensor): Tensor to be rescaled.
+        f_next_q_value    (torch.Tensor): Reference tensor whose min/max define the target range.
+
+    Returns:
+        torch.Tensor: A new tensor, same shape as ent_target, rescaled to lie between
+                      min(next_q_value) and max(next_q_value).
+    """
+    if f_ent_target.shape != f_next_q_value.shape:
+        raise ValueError(f"Shape mismatch: {f_ent_target.shape} vs {f_next_q_value.shape}")
+
+    et_min = f_ent_target.min()
+    et_max = f_ent_target.max()
+    nq_min = f_next_q_value.min()
+    nq_max = f_next_q_value.max()
+
+    # If ent_target is constant, just fill with the lower bound
+    if et_max == et_min:
+        return torch.full_like(f_ent_target, nq_min)
+
+    # normalize to [0,1]
+    normalized = (f_ent_target - et_min) / (et_max - et_min)
+    # scale to [nq_min, nq_max]
+    return normalized * (nq_max - nq_min) + nq_min
+
+
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -360,8 +391,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 ent1_pred = ent_vals1.gather(1, data.actions.long()).view(-1)
                 ent2_pred = ent_vals2.gather(1, data.actions.long()).view(-1)
 
-                ent1_loss = F.mse_loss(ent1_pred, ent_target.clamp(max=next_q_value))
-                ent2_loss = F.mse_loss(ent2_pred, ent_target.clamp(max=next_q_value))
+                if ent_target.sum() > next_q_value.sum():
+                    ent_target_scaled = rescale_ent_target(ent_target, next_q_value)
+                else:
+                    ent_target_scaled = ent_target
+
+                ent1_loss = F.mse_loss(ent1_pred, ent_target_scaled)
+                ent2_loss = F.mse_loss(ent2_pred, ent_target_scaled)
                 ent_loss = ent1_loss + ent2_loss
 
                 qf_ent_loss = qf_loss + ent_loss
