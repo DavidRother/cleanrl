@@ -284,19 +284,19 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     episodic_return = info["episode"]["r"]
                     episodic_length = info["episode"]["l"]
                     latest_return = episodic_return
-                    writer.add_scalar("charts/episodic_return", episodic_return, global_step)
-                    writer.add_scalar("charts/episodic_length", episodic_length, global_step)
+                    writer.add_scalar(f"{run_prefix}/ccharts/episodic_return", episodic_return, global_step)
+                    writer.add_scalar(f"{run_prefix}/ccharts/episodic_length", episodic_length, global_step)
 
                     # Track the average episodic return over the last 50 episodes
                     episode_returns.append(episodic_return)
                     if len(episode_returns) > 50:
                         episode_returns.pop(0)
                     avg_return = sum(episode_returns) / len(episode_returns)
-                    writer.add_scalar("charts/episodic_return_avg", avg_return, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
 
                     # Track (episodic return / episodic length) minus the current alpha
                     adjusted_metric = avg_return - alpha
-                    writer.add_scalar("charts/episodic_return_adjusted", adjusted_metric, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_adjusted", adjusted_metric, global_step)
                     break
 
             # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
@@ -395,21 +395,21 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
                 if global_step % 100 == 0:
-                    writer.add_scalar("losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                    writer.add_scalar("losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                    writer.add_scalar("losses/qf1_loss", qf1_loss.item(), global_step)
-                    writer.add_scalar("losses/qf2_loss", qf2_loss.item(), global_step)
-                    writer.add_scalar("losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                    writer.add_scalar("losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
-                    writer.add_scalar("losses/actor_loss", actor_loss.item(), global_step)
-                    writer.add_scalar("losses/alpha", alpha, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf2_loss", qf2_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf_loss", qf_loss.item() / 2.0, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/actor_loss", actor_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/alpha", alpha, global_step)
                     sps = int(global_step / (time.time() - start_time))
-                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                    writer.add_scalar("charts/old_entropy", H_old.mean().item(), global_step)
-                    writer.add_scalar("charts/policy_entropy", H_new.mean().item(), global_step)
-                    writer.add_scalar("losses/entropy_loss", entropy_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/old_entropy", H_old.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/policy_entropy", H_new.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/entropy_loss", entropy_loss.item(), global_step)
                     if args.autotune:
-                        writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
+                        writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
 
                     progress_bar.set_postfix({
                         "step": global_step,
