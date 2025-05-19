@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/SpaceInvaders-v1"
+    env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -72,6 +72,9 @@ class Args:
     """automatic tuning of the entropy coefficient"""
     target_entropy_scale: float = 0.89
     """coefficient for scaling the autotune entropy target"""
+    bias: float = 0.5
+    bias_low: float = 0.0
+    bias_cycle: int = 500000
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -182,6 +185,18 @@ class Actor(nn.Module):
         return action, log_prob, action_probs
 
 
+def get_cycling_bias(step, bias, bias_low, bias_cycle):
+    # centre and amplitude of the wave
+    amp = (bias - bias_low) / 2.0
+    mid = (bias + bias_low) / 2.0
+
+    # position inside current cycle (0 … 1)
+    phase = (step % bias_cycle) / bias_cycle    # float32 OK
+
+    # cos-based wave that starts at the minimum
+    return float(mid - amp * np.cos(2.0 * np.pi * phase))
+
+
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -193,7 +208,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 """
         )
     args = tyro.cli(Args)
-    writer = SummaryWriter(f"runs/{args.env_id}__{args.exp_name}")
+    writer = SummaryWriter(f"runs_trial/{args.env_id}__{args.exp_name}")
     # You can also add the hyperparameters text once (they remain common across runs)
     writer.add_text(
         "global_hyperparameters",
@@ -205,7 +220,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # Outer loop: run training 5 times with different seeds.
-    for run_idx in range(5):
+    for run_idx in range(1):
 
         # Update the seed for the current run
         current_seed = args.seed + run_idx
@@ -315,8 +330,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             if global_step > args.learning_starts:
                 if global_step % args.update_frequency == 0:
                     data = rb.sample(args.batch_size)
+                    current_bias = torch.tensor(
+                        get_cycling_bias(global_step, args.bias, args.bias_low, args.bias_cycle),
+                        dtype=torch.float32,
+                        device=device
+                    )
                     # CRITIC training
-                    with torch.no_grad():
+                    with (torch.no_grad()):
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
                         qf2_next_target = qf2_target(data.next_observations)
@@ -324,7 +344,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         min_qf_next_target = next_state_action_probs * 0.5 * (qf1_next_target + qf2_next_target)
                         # adapt Q-target for discrete Q-function
                         min_qf_next_target = min_qf_next_target.sum(dim=1)
-                        next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
+                        next_q_value = data.rewards.flatten() + current_bias + (1 - data.dones.flatten()) * args.gamma * min_qf_next_target
 
                     # use Q-values only for the taken actions
                     qf1_values = qf1(data.observations)
@@ -408,6 +428,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     sps = int(global_step / (time.time() - start_time))
                     writer.add_scalar(f"{run_prefix}/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/current_bias", current_bias.item(), global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
 
