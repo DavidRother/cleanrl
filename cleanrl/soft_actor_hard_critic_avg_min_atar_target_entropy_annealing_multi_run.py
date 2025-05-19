@@ -1,4 +1,3 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/sac/#sac_ataripy
 import os
 import random
 import time
@@ -12,6 +11,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 import tqdm
+import math
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -26,10 +26,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 @dataclass
 class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    exp_name: str = os.path.basename(__file__)[:-len(".py")]
     """the name of this experiment"""
     seed: int = 123456
-    """seed of the experiment"""
+    """seed of the experiment (base seed; each run will use seed + run_index)"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
@@ -44,18 +44,18 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Asterix-v1"
+    env_id: str = "MinAtar/Freeway-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
-    """the replay memory buffer size"""  # smaller than in original paper but evaluation is done only for 100k steps anyway
+    """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 1.0
     """target smoothing coefficient (default: 1)"""
     batch_size: int = 64
-    """the batch size of sample from the reply memory"""
+    """the batch size of sample from the replay memory"""
     learning_starts: int = 2e4
     """timestep to start learning"""
     policy_lr: float = 3e-4
@@ -70,8 +70,22 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    target_entropy_scale: float = 0.89
+    target_entropy_start_exploitation: float = 0.50
     """coefficient for scaling the autotune entropy target"""
+    target_entropy_end_exploitation: float = 0.80
+    alpha_eps: float = 2e-2
+    """a small epsilon added for adjusting metrics"""
+
+
+def target_entropy_from_exploitation_probability(p, n):
+    if p <= 0 or p >= 1:
+        raise ValueError("Exploitation probability p must be in the open interval (0, 1).")
+
+    # Compute the entropy of the distribution.
+    ent = - (p * math.log(p) + (1 - p) * math.log((1 - p) / (n - 1)))
+
+    # Return the SAC-style target entropy (i.e., negative of the computed entropy).
+    return ent
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -100,6 +114,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env = ChannelFirstWrapper(env)
+        # Uncomment the following wrappers if desired:
         # env = NoopResetEnv(env, noop_max=30)
         # env = MaxAndSkipEnv(env, skip=4)
         # env = EpisodicLifeEnv(env)
@@ -123,9 +138,6 @@ def layer_init(layer, bias_const=0.0):
 
 
 # ALGO LOGIC: initialize agent here:
-# NOTE: Sharing a CNN encoder between Actor and Critics is not recommended for SAC without stopping actor gradients
-# See the SAC+AE paper https://arxiv.org/abs/1910.01741 for more info
-# TL;DR The actor's gradients mess up the representation when using a joint encoder
 class SoftQNetwork(nn.Module):
     def __init__(self, envs):
         super().__init__()
@@ -169,7 +181,6 @@ class Actor(nn.Module):
         x = F.relu(self.conv(x))
         x = F.relu(self.fc1(x))
         logits = self.fc_logits(x)
-
         return logits
 
     def get_action(self, x):
@@ -193,6 +204,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 """
         )
     args = tyro.cli(Args)
+
+    # Create one shared TensorBoard writer that will log all runs into the same folder.
     writer = SummaryWriter(f"runs/{args.env_id}__{args.exp_name}")
     # You can also add the hyperparameters text once (they remain common across runs)
     writer.add_text(
@@ -206,12 +219,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     # Outer loop: run training 5 times with different seeds.
     for run_idx in range(5):
-
         # Update the seed for the current run
         current_seed = args.seed + run_idx
         run_prefix = f"seed_{current_seed}"
-        folder_name = f"{args.env_id}__{args.exp_name}"
-        run_name = f"folder_name__{run_prefix}__{int(time.time())}"
+        run_name = f"{args.env_id}__{args.exp_name}__{run_prefix}__{int(time.time())}"
         print(f"Starting run: {run_prefix}")
 
         # (Re)seed randomness for current run
@@ -254,23 +265,35 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
         # Automatic entropy tuning
         if args.autotune:
-            target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
+            target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
+                                                                                envs.single_action_space.n)
+            target_entropy_end = target_entropy_from_exploitation_probability(args.target_entropy_end_exploitation,
+                                                                              envs.single_action_space.n)
+            target_entropy = target_entropy_start
             log_alpha = torch.zeros(1, requires_grad=True, device=device)
             alpha = log_alpha.exp().item()
             a_optimizer = optim.Adam([log_alpha], lr=args.q_lr, eps=1e-4)
         else:
             alpha = args.alpha
 
-        rb = ReplayBuffer(args.buffer_size, envs.single_observation_space, envs.single_action_space, device,
-                          handle_timeout_termination=False, )
+        rb = ReplayBuffer(
+            args.buffer_size,
+            envs.single_observation_space,
+            envs.single_action_space,
+            device,
+            handle_timeout_termination=False,
+        )
         start_time = time.time()
 
         progress_bar = tqdm.trange(args.total_timesteps, desc=f"Training {run_prefix}", dynamic_ncols=True)
         latest_return = None
         episode_returns = []
         episodic_lengths = []
+        avg_return_normalised = alpha
 
         lowest_return = np.inf
+
+        alpha_eps = args.alpha_eps
 
         obs, _ = envs.reset(seed=current_seed)
         for global_step in progress_bar:
@@ -301,12 +324,20 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         episodic_lengths.pop(0)
                     avg_return = np.mean(episode_returns)
                     writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
+
+                    if episodic_return < lowest_return:
+                        lowest_return = episodic_return
+
+                    avg_return_normalised = (avg_return - lowest_return) / np.mean(episodic_lengths)
+                    adjusted_metric = avg_return_normalised - alpha
+                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_adjusted", adjusted_metric, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/alpha_upper_bound", avg_return_normalised + args.alpha_eps, global_step)
                     break
 
             # Process replay buffer
             real_next_obs = next_obs.copy()
-            for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
-                if trunc or term:
+            for idx, trunc in enumerate(truncations):
+                if trunc:
                     real_next_obs[idx] = infos["final_observation"][idx]
             rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
             obs = next_obs
@@ -315,18 +346,20 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             if global_step > args.learning_starts:
                 if global_step % args.update_frequency == 0:
                     data = rb.sample(args.batch_size)
-                    # CRITIC training
+
+                    _, log_pi, action_probs = actor.get_action(data.observations)
+                    policy_dist = Categorical(probs=action_probs)
+                    entropy = policy_dist.entropy().mean().item()
+
+                    alpha_used = alpha
                     with torch.no_grad():
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
                         qf2_next_target = qf2_target(data.next_observations)
-                        # we can use the action probabilities instead of MC sampling to estimate the expectation
-                        min_qf_next_target = next_state_action_probs * 0.5 * (qf1_next_target + qf2_next_target)
-                        # adapt Q-target for discrete Q-function
+                        min_qf_next_target = next_state_action_probs * (0.5 * (qf1_next_target + qf2_next_target))
                         min_qf_next_target = min_qf_next_target.sum(dim=1)
-                        next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target)
+                        next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * min_qf_next_target
 
-                    # use Q-values only for the taken actions
                     qf1_values = qf1(data.observations)
                     qf2_values = qf2(data.observations)
                     qf1_a_values = qf1_values.gather(1, data.actions.long()).view(-1)
@@ -339,29 +372,26 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     qf_loss.backward()
                     q_optimizer.step()
 
-                    # ACTOR training
-                    _, log_pi, action_probs = actor.get_action(data.observations)
-                    policy_dist = Categorical(probs=action_probs)
-                    entropy = policy_dist.entropy().mean().item()
                     with torch.no_grad():
                         qf1_values = qf1(data.observations)
                         qf2_values = qf2(data.observations)
                         min_qf_values = 0.5 * (qf1_values + qf2_values)
-                    # no need for reparameterization, the expectation can be calculated for discrete actions
-                    actor_loss = (action_probs * ((alpha * log_pi) - min_qf_values)).mean()
+                    actor_loss = (action_probs * ((alpha_used * log_pi) - min_qf_values)).mean()
+                    # reps_loss = (pi_phi * (log_pi_phi  - pi_l_log_probs  - Q_values / eta + log_Z)).sum(dim=-1).mean()
 
                     actor_optimizer.zero_grad()
                     actor_loss.backward()
                     actor_optimizer.step()
+                    progress_ratio = min(global_step / args.total_timesteps, 1.0)
+                    current_target_entropy = target_entropy_start + progress_ratio * (
+                            target_entropy_end - target_entropy_start)
+                    writer.add_scalar("losses/current_target_entropy", current_target_entropy, global_step)
 
-                    if args.autotune:
-                        # re-use action probabilities for temperature loss
-                        alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + target_entropy).detach())).mean()
-
-                        a_optimizer.zero_grad()
-                        alpha_loss.backward()
-                        a_optimizer.step()
-                        alpha = log_alpha.exp().item()
+                    alpha_loss = (action_probs.detach() * (-log_alpha.exp() * (log_pi + current_target_entropy).detach())).mean()
+                    a_optimizer.zero_grad()
+                    alpha_loss.backward()
+                    a_optimizer.step()
+                    alpha = log_alpha.exp().item()
 
                     primal_residual = max(0.0, target_entropy - entropy)
 
@@ -384,7 +414,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     q_var = min_qf_values.var(dim=1, unbiased=False).mean().item()
 
-                # update the target networks
+                # Update the target networks.
                 if global_step % args.target_network_frequency == 0:
                     for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
@@ -405,8 +435,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     writer.add_scalar(f"{run_prefix}/losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
                     writer.add_scalar(f"{run_prefix}/losses/q_variance", q_var, global_step)
                     writer.add_scalar(f"{run_prefix}/losses/alpha", alpha, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/alpha_used", alpha_used, global_step)
                     sps = int(global_step / (time.time() - start_time))
-                    writer.add_scalar(f"{run_prefix}/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
@@ -417,7 +448,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         "sps": sps
                     })
 
+        # End of training for this run.
         envs.close()
+
+        # Save the final actor model into the TensorBoard folder.
         model_save_path = os.path.join(writer.log_dir, f"final_model_{run_prefix}.pt")
         torch.save(actor.state_dict(), model_save_path)
         print(f"Saved final model for {run_prefix} to {model_save_path}")
