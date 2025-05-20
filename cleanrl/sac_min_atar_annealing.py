@@ -249,6 +249,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
+    num_actions = envs.single_action_space.n
     # Automatic entropy tuning
     if args.autotune:
         target_entropy_start = target_entropy_from_exploitation_probability(args.target_entropy_start_exploitation,
