@@ -90,18 +90,54 @@ def kl_categorical_vs_uniform(p, n):
     return term1 + term2
 
 
-def kl_prior_exploit_chance(p, _prior):
-    n = prior.numel()
+_LN2 = math.log(2.0)
+
+
+def _safe_kl_nats(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """
+    Element-wise KL(p‖q) in natural units (nats).
+    0·log0 is defined as 0 to stay numerically stable.
+    """
+    return torch.where(
+        p > 0,
+        p * torch.log(p / q),
+        torch.zeros_like(p)
+    ).sum()
+
+
+def _js_distance_bits(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+    """
+    Jensen-Shannon *distance* between p and q, returned in bits (range 0–1).
+    """
+    m = 0.5 * (p + q)
+    js_div_nats = 0.5 * _safe_kl_nats(p, m) + 0.5 * _safe_kl_nats(q, m)
+    js_div_bits = js_div_nats / _LN2
+    return torch.sqrt(js_div_bits)
+
+
+def js_prior_exploit_distance_bits_max(p: float, _prior: torch.Tensor) -> torch.Tensor:
+    n = _prior.numel()
     max_idx = torch.argmax(_prior).item()
-    peaked = torch.full((n,), (1.0 - p) / (n - 1), dtype=_prior.dtype, device=device)
+
+    peaked = torch.full_like(_prior, (1.0 - p) / (n - 1))
     peaked[max_idx] = p
-    kl = torch.sum(peaked * torch.log(peaked / _prior))
-    return kl
+
+    return _js_distance_bits(peaked, _prior)
 
 
-def kl_categorical_vs_prior_torch(posterior, _prior):
-    kl = torch.sum(posterior * torch.log(posterior / _prior))
-    return kl
+def js_prior_exploit_distance_bits_min(p: float, _prior: torch.Tensor) -> torch.Tensor:
+    n = _prior.numel()
+    min_idx = torch.argmin(_prior).item()
+
+    peaked = torch.full_like(_prior, (1.0 - p) / (n - 1))
+    peaked[min_idx] = p
+
+    return _js_distance_bits(peaked, _prior)
+
+
+def js_categorical_vs_prior_distance_bits(posterior: torch.Tensor,
+                                          _prior: torch.Tensor) -> torch.Tensor:
+    return _js_distance_bits(posterior, _prior)
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -290,10 +326,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
-        # target_kl_start = kl_prior_exploit_chance(args.target_entropy_start_exploitation, prior)
-        # target_kl_end = kl_prior_exploit_chance(args.target_entropy_end_exploitation, prior)
-        target_kl_start = 0.9
-        target_kl_end = 1.5
+        target_kl_start = js_prior_exploit_distance_bits_max(args.target_entropy_start_exploitation, prior)
+        target_kl_end = js_prior_exploit_distance_bits_min(args.target_entropy_end_exploitation, prior)
+        # target_kl_start = 0.9
+        # target_kl_end = 1.5
         print(f"kl start value: {target_kl_start}")
         print(f"kl end value: {target_kl_end}")
         target_kl = target_kl_start
@@ -416,11 +452,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     with torch.no_grad():
                         _, log_pi, action_probs = actor.get_action(data.observations)
                     # discrete‐entropy per state:
-                    kl_per_state = kl_categorical_vs_prior_torch(action_probs, prior)
+                    kl_per_state = js_categorical_vs_prior_distance_bits(action_probs, prior)
 
                     # dual update for α:
                     kl_detached = kl_per_state.detach()
-                    alpha_loss = -(log_alpha.exp() * (kl_detached - current_target_kl)).mean()
+                    alpha_loss = -(log_alpha.exp() * (current_target_kl - kl_detached)).mean()
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
                     a_optimizer.step()
@@ -472,8 +508,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     sps = int(global_step / (time.time() - start_time))
                     writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_kl", kl_detached, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/current_target_kl", current_target_kl, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_jsd", kl_detached, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/current_target_jsd", current_target_kl, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
 
