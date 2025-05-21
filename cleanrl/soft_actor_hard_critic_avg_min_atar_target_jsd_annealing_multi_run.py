@@ -93,16 +93,18 @@ def kl_categorical_vs_uniform(p, n):
 _LN2 = math.log(2.0)
 
 
-def _safe_kl_nats(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
+def _safe_kl_nats(p: torch.Tensor,
+                  q: torch.Tensor,
+                  dim: int = -1) -> torch.Tensor:
     """
-    Element-wise KL(p‖q) in natural units (nats).
-    0·log0 is defined as 0 to stay numerically stable.
+    KL(p‖q) in nats, summed along `dim`.
+    Supports broadcasting & batched tensors.
     """
     return torch.where(
         p > 0,
         p * torch.log(p / q),
         torch.zeros_like(p)
-    ).sum()
+    ).sum(dim=dim)
 
 
 def _js_distance_bits(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
@@ -120,7 +122,7 @@ def js_prior_exploit_distance_bits_max(p: float, _prior: torch.Tensor) -> torch.
     max_idx = torch.argmax(_prior).item()
 
     peaked = torch.full_like(_prior, (1.0 - p) / (n - 1))
-    peaked[max_idx] = p
+    peaked[0, max_idx] = p
 
     return _js_distance_bits(peaked, _prior)
 
@@ -130,7 +132,7 @@ def js_prior_exploit_distance_bits_min(p: float, _prior: torch.Tensor) -> torch.
     min_idx = torch.argmin(_prior).item()
 
     peaked = torch.full_like(_prior, (1.0 - p) / (n - 1))
-    peaked[min_idx] = p
+    peaked[0, min_idx] = p
 
     return _js_distance_bits(peaked, _prior)
 
@@ -271,11 +273,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     priors = {
         # noop, fire,  left, right,  up,  down
-        "MinAtar/Asterix-v1": torch.tensor([0.04, 0.24, 0.24, 0.24, 0.24], device=device),
-        "MinAtar/Breakout-v1": torch.tensor([0.1, 0.45, 0.45], device=device),
-        "MinAtar/Freeway-v1": torch.tensor([0.3, 0.4, 0.3], device=device),
-        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.19, 0.19, 0.19, 0.19, 0.19], device=device),
-        "MinAtar/SpaceInvaders-v1": torch.tensor([0.1, 0.5, 0.2, 0.2], device=device),
+        "MinAtar/Asterix-v1": torch.tensor([0.04, 0.24, 0.24, 0.24, 0.24], device=device).unsqueeze(0),
+        "MinAtar/Breakout-v1": torch.tensor([0.1, 0.45, 0.45], device=device).unsqueeze(0),
+        "MinAtar/Freeway-v1": torch.tensor([0.25, 0.5, 0.25], device=device).unsqueeze(0),
+        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.19, 0.19, 0.19, 0.19, 0.19], device=device).unsqueeze(0),
+        "MinAtar/SpaceInvaders-v1": torch.tensor([0.1, 0.5, 0.2, 0.2], device=device).unsqueeze(0),
     }
 
     prior = priors[args.env_id]
@@ -326,12 +328,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
-        target_kl_start = js_prior_exploit_distance_bits_max(args.target_entropy_start_exploitation, prior)
+        uniform = torch.full_like(prior, 1/envs.single_action_space.n)
+        target_kl_start = js_categorical_vs_prior_distance_bits(uniform, prior) + 0.05
         target_kl_end = js_prior_exploit_distance_bits_min(args.target_entropy_end_exploitation, prior)
-        # target_kl_start = 0.9
-        # target_kl_end = 1.5
-        print(f"kl start value: {target_kl_start}")
-        print(f"kl end value: {target_kl_end}")
+        # target_kl_start = 0.3
+        # target_kl_end = 0.6
+        print(f"JSD start value: {target_kl_start}")
+        print(f"JSD end value: {target_kl_end}")
         target_kl = target_kl_start
         log_alpha = torch.zeros(1, requires_grad=True, device=device)
         alpha = log_alpha.exp().item()
@@ -419,7 +422,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
                         qf2_next_target = qf2_target(data.next_observations)
-                        min_qf_next_target = next_state_action_probs * torch.min(qf1_next_target + qf2_next_target)
+                        min_qf_next_target = next_state_action_probs * 0.5 * (qf1_next_target + qf2_next_target)
                         min_qf_next_target = min_qf_next_target.sum(dim=1)
                         next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * min_qf_next_target
 
@@ -446,8 +449,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     actor_loss.backward()
                     actor_optimizer.step()
                     progress_ratio = min(global_step / args.total_timesteps, 1.0)
-                    current_target_kl = target_kl_start + progress_ratio * (
-                            target_kl_end - target_kl_start)
+                    current_target_kl = target_kl_start + progress_ratio * (target_kl_end - target_kl_start)
 
                     with torch.no_grad():
                         _, log_pi, action_probs = actor.get_action(data.observations)
@@ -456,7 +458,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     # dual update for α:
                     kl_detached = kl_per_state.detach()
-                    alpha_loss = -(log_alpha.exp() * (current_target_kl - kl_detached)).mean()
+                    alpha_loss = -(log_alpha.exp() * (kl_detached - current_target_kl)).mean()
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
                     a_optimizer.step()
@@ -508,7 +510,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     sps = int(global_step / (time.time() - start_time))
                     writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_jsd", kl_detached, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_jsd", kl_detached.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/current_target_jsd", current_target_kl, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)

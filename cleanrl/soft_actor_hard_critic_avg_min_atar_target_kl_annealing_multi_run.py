@@ -90,7 +90,7 @@ def kl_categorical_vs_uniform(p, n):
     return term1 + term2
 
 
-def kl_prior_exploit_chance(p, _prior):
+def kl_prior_exploit_chance_max(p, _prior):
     n = prior.numel()
     max_idx = torch.argmax(_prior).item()
     peaked = torch.full((n,), (1.0 - p) / (n - 1), dtype=_prior.dtype, device=device)
@@ -99,9 +99,19 @@ def kl_prior_exploit_chance(p, _prior):
     return kl
 
 
-def kl_categorical_vs_prior_torch(posterior, _prior):
-    kl = torch.sum(posterior * torch.log(posterior / _prior))
+def kl_prior_exploit_chance_min(p, _prior):
+    n = prior.numel()
+    min_idx = torch.argmin(_prior).item()
+    peaked = torch.full((n,), (1.0 - p) / (n - 1), dtype=_prior.dtype, device=device)
+    peaked[min_idx] = p
+    kl = torch.sum(peaked * torch.log(peaked / _prior))
     return kl
+
+
+def kl_categorical_vs_prior_torch(posterior, _prior, dim=-1):
+    return torch.where(posterior > 0,
+                       posterior * torch.log(posterior / _prior),
+                       torch.zeros_like(posterior)).sum(dim=dim)
 
 
 class ChannelFirstWrapper(gym.ObservationWrapper):
@@ -235,11 +245,11 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     priors = {
         # noop, fire,  left, right,  up,  down
-        "MinAtar/Asterix-v1": torch.tensor([0.04, 0.24, 0.24, 0.24, 0.24], device=device),
-        "MinAtar/Breakout-v1": torch.tensor([0.1, 0.45, 0.45], device=device),
-        "MinAtar/Freeway-v1": torch.tensor([0.3, 0.4, 0.3], device=device),
-        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.19, 0.19, 0.19, 0.19, 0.19], device=device),
-        "MinAtar/SpaceInvaders-v1": torch.tensor([0.1, 0.5, 0.2, 0.2], device=device),
+        "MinAtar/Asterix-v1": torch.tensor([0.04, 0.24, 0.24, 0.24, 0.24], device=device).unsqueeze(0),
+        "MinAtar/Breakout-v1": torch.tensor([0.1, 0.45, 0.45], device=device).unsqueeze(0),
+        "MinAtar/Freeway-v1": torch.tensor([0.3, 0.4, 0.3], device=device).unsqueeze(0),
+        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.19, 0.19, 0.19, 0.19, 0.19], device=device).unsqueeze(0),
+        "MinAtar/SpaceInvaders-v1": torch.tensor([0.1, 0.5, 0.2, 0.2], device=device).unsqueeze(0),
     }
 
     prior = priors[args.env_id]
@@ -290,10 +300,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
-        # target_kl_start = kl_prior_exploit_chance(args.target_entropy_start_exploitation, prior)
-        # target_kl_end = kl_prior_exploit_chance(args.target_entropy_end_exploitation, prior)
-        target_kl_start = 0.9
-        target_kl_end = 1.5
+        target_kl_start = kl_prior_exploit_chance_min(args.target_entropy_start_exploitation, prior)
+        target_kl_end = kl_prior_exploit_chance_max(args.target_entropy_end_exploitation, prior)
+        # target_kl_start = 0.9
+        # target_kl_end = 1.5
         print(f"kl start value: {target_kl_start}")
         print(f"kl end value: {target_kl_end}")
         target_kl = target_kl_start
@@ -383,7 +393,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         _, next_state_log_pi, next_state_action_probs = actor.get_action(data.next_observations)
                         qf1_next_target = qf1_target(data.next_observations)
                         qf2_next_target = qf2_target(data.next_observations)
-                        min_qf_next_target = next_state_action_probs * torch.min(qf1_next_target + qf2_next_target)
+                        min_qf_next_target = next_state_action_probs * 0.5 * (qf1_next_target + qf2_next_target)
                         min_qf_next_target = min_qf_next_target.sum(dim=1)
                         next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * min_qf_next_target
 
@@ -403,7 +413,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         qf1_values = qf1(data.observations)
                         qf2_values = qf2(data.observations)
                         min_qf_values = 0.5 * (qf1_values + qf2_values)
-                    actor_loss = (action_probs * ((alpha_used * log_pi) - min_qf_values)).mean()
+                    actor_loss = (action_probs * ((alpha_used * (log_pi - prior)) - min_qf_values)).mean()
                     # reps_loss = (pi_phi * (log_pi_phi  - pi_l_log_probs  - Q_values / eta + log_Z)).sum(dim=-1).mean()
 
                     actor_optimizer.zero_grad()
@@ -472,7 +482,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     sps = int(global_step / (time.time() - start_time))
                     writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_kl", kl_detached, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_kl", kl_detached.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/current_target_kl", current_target_kl, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
