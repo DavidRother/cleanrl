@@ -235,6 +235,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
+    num_actions = envs.single_action_space.n
+
     # Automatic entropy tuning
     if args.autotune:
         target_entropy = -args.target_entropy_scale * torch.log(1 / torch.tensor(envs.single_action_space.n))
@@ -257,6 +259,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     latest_return = None
     episode_returns = []
 
+    action_counts = np.zeros(num_actions, dtype=np.int64)
+
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
     for global_step in progress_bar:
@@ -266,6 +270,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         else:
             actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
+
+        action_counts += np.bincount(actions, minlength=num_actions)
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
@@ -400,6 +406,13 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 sps = int(global_step / (time.time() - start_time))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/mean_policy_entropy", entropy, global_step)
+                actions_in_window = action_counts.sum()
+                if actions_in_window:  # avoid division by zero
+                    freq_window = action_counts / actions_in_window
+                    for idx, freq in enumerate(freq_window):
+                        writer.add_scalar(f"metrics/a{idx}", freq, global_step)
+                # reset for the next window
+                action_counts[:] = 0
                 if args.autotune:
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
 

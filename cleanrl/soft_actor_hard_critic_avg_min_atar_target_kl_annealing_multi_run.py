@@ -44,7 +44,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "MinAtar/Freeway-v1"
+    env_id: str = "MinAtar/Seaquest-v1"
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -246,9 +246,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     priors = {
         # noop, fire,  left, right,  up,  down
         "MinAtar/Asterix-v1": torch.tensor([0.04, 0.24, 0.24, 0.24, 0.24], device=device).unsqueeze(0),
-        "MinAtar/Breakout-v1": torch.tensor([0.1, 0.45, 0.45], device=device).unsqueeze(0),
-        "MinAtar/Freeway-v1": torch.tensor([0.3, 0.4, 0.3], device=device).unsqueeze(0),
-        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.19, 0.19, 0.19, 0.19, 0.19], device=device).unsqueeze(0),
+        "MinAtar/Breakout-v1": torch.tensor([0.2, 0.4, 0.4], device=device).unsqueeze(0),
+        "MinAtar/Freeway-v1": torch.tensor([0.2, 0.5, 0.3], device=device).unsqueeze(0),
+        "MinAtar/Seaquest-v1": torch.tensor([0.05, 0.27, 0.15, 0.15, 0.2, 0.18], device=device).unsqueeze(0),
         "MinAtar/SpaceInvaders-v1": torch.tensor([0.1, 0.5, 0.2, 0.2], device=device).unsqueeze(0),
     }
 
@@ -301,7 +301,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
         target_kl_start = kl_prior_exploit_chance_min(args.target_entropy_start_exploitation, prior)
-        target_kl_end = kl_prior_exploit_chance_max(args.target_entropy_end_exploitation, prior)
+        target_kl_end = kl_prior_exploit_chance_min(args.target_entropy_end_exploitation, prior)
         # target_kl_start = 0.9
         # target_kl_end = 1.5
         print(f"kl start value: {target_kl_start}")
@@ -328,6 +328,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         num_actions = envs.single_action_space.n
         print(f"num_actions: {num_actions}")
 
+        action_counts = np.zeros(num_actions, dtype=np.int64)
+
         lowest_return = np.inf
 
         alpha_eps = args.alpha_eps
@@ -340,6 +342,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             else:
                 actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
                 actions = actions.detach().cpu().numpy()
+
+            action_counts += np.bincount(actions, minlength=num_actions)
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
@@ -484,8 +488,14 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_kl", kl_detached.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/current_target_kl", current_target_kl, global_step)
-                    if args.autotune:
-                        writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
+                    actions_in_window = action_counts.sum()
+                    if actions_in_window:  # avoid division by zero
+                        freq_window = action_counts / actions_in_window
+                        for idx, freq in enumerate(freq_window):
+                            writer.add_scalar(f"{run_prefix}/metrics/a{idx}", freq, global_step)
+                    # reset for the next window
+                    action_counts[:] = 0
 
                     progress_bar.set_postfix({
                         "step": global_step,
