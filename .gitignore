@@ -137,3 +137,4 @@ venv.bak/
 /cleanrl/runs_temporary/
 /cleanrl/runs_soft_q/
 /cleanrl/runs_requiem/
+/cleanrl/runs_paper/
