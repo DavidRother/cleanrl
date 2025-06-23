@@ -69,6 +69,7 @@ class Args:
     p_start: float = 0.5
     p_end: float = 0.8
     half_width: float = 0.25
+    bonus_term: float = 0.05
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -337,7 +338,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                     qf2_next_target = qf2_target(data.next_observations, next_state_actions)
                     min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1) + args.bonus_term
 
                 qf1_a_values = qf1(data.observations, data.actions).view(-1)
                 qf2_a_values = qf2(data.observations, data.actions).view(-1)

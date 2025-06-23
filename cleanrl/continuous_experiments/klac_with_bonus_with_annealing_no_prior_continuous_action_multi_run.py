@@ -69,6 +69,7 @@ class Args:
     p_start: float = 0.5
     p_end: float = 0.8
     half_width: float = 0.25
+    bonus_term: float = 0.05
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -284,8 +285,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         episode_returns = []
         episodic_lengths = []
 
-        upper_bound, lower_bound = continuous_uniform_prior_bounds(envs.single_action_space, args.p_start,
-                                                                   args.p_end, args.half_width)
+        target_kl_start, target_kl_end = continuous_uniform_prior_bounds(envs.single_action_space, args.p_start,
+                                                                         args.p_end, args.half_width)
+
+        print(f"kl start value: {target_kl_start}")
+        print(f"kl end value: {target_kl_end}")
+        target_kl = target_kl_start
 
         lowest_return = np.inf
 
@@ -298,8 +303,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if global_step < args.learning_starts:
                 actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
             else:
-                actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+                actions, _, log_std_taken = actor.get_action(torch.Tensor(obs).to(device))
                 actions = actions.detach().cpu().numpy()
+
+                writer.add_histogram(f"{run_prefix}/vectors/actions", actions, global_step)
+                writer.add_histogram(f"{run_prefix}/vectors/log_std", log_std_taken, global_step)
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
@@ -337,7 +345,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                     qf2_next_target = qf2_target(data.next_observations, next_state_actions)
                     min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1)
+                    next_q_value = data.rewards.flatten() + (1 - data.dones.flatten()) * args.gamma * (min_qf_next_target).view(-1) + args.bonus_term
 
                 qf1_a_values = qf1(data.observations, data.actions).view(-1)
                 qf2_a_values = qf2(data.observations, data.actions).view(-1)
@@ -370,15 +378,18 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         actor_loss.backward()
                         actor_optimizer.step()
 
-                        if args.autotune:
-                            with torch.no_grad():
-                                _, log_pi, _ = actor.get_action(data.observations)
-                            alpha_loss = (-log_alpha.exp() * (log_pi + target_entropy)).mean()
+                        progress_ratio = min(global_step / args.total_timesteps, 1.0)
+                        current_target_kl = target_kl_start + progress_ratio * (target_kl_end - target_kl_start)
 
-                            a_optimizer.zero_grad()
-                            alpha_loss.backward()
-                            a_optimizer.step()
-                            alpha = log_alpha.exp().item()
+                        with torch.no_grad():
+                            _, log_pi, _ = actor.get_action(data.observations)
+                            kl_sample = log_pi - log_ref
+                        alpha_loss = (-log_alpha.exp() * (kl_sample + current_target_kl)).mean()
+
+                        a_optimizer.zero_grad()
+                        alpha_loss.backward()
+                        a_optimizer.step()
+                        alpha = log_alpha.exp().item()
 
                 # update the target networks
                 if global_step % args.target_network_frequency == 0:
