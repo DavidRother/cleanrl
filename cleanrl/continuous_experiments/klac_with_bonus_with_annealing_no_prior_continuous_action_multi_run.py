@@ -180,10 +180,10 @@ class Actor(nn.Module):
 
         return mean, log_std
 
-    def get_action(self, x):
-        mean, log_std = self(x)
-        std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
+    def get_action(self, x, with_raw=False):
+        raw_mean, raw_log_std = self(x)
+        std = raw_log_std.exp()
+        normal = torch.distributions.Normal(raw_mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
         y_t = torch.tanh(x_t)
         action = y_t * self.action_scale + self.action_bias
@@ -191,8 +191,11 @@ class Actor(nn.Module):
         # Enforcing Action Bound
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return action, log_prob, mean
+        mean = torch.tanh(raw_mean) * self.action_scale + self.action_bias
+        if with_raw:
+            return action, log_prob, mean, raw_mean, raw_log_std
+        else:
+            return action, log_prob, mean
 
 
 if __name__ == "__main__":
@@ -303,11 +306,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if global_step < args.learning_starts:
                 actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
             else:
-                actions, _, log_std_taken = actor.get_action(torch.Tensor(obs).to(device))
+                actions, _, _, raw_mean, raw_log_std = actor.get_action(torch.Tensor(obs).to(device), with_raw=True)
                 actions = actions.detach().cpu().numpy()
 
-                writer.add_histogram(f"{run_prefix}/vectors/actions", actions, global_step)
-                writer.add_histogram(f"{run_prefix}/vectors/log_std", log_std_taken, global_step)
+                writer.add_histogram(f"{run_prefix}/vectors/actions", raw_mean, global_step)
+                writer.add_histogram(f"{run_prefix}/vectors/log_std", raw_log_std, global_step)
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)

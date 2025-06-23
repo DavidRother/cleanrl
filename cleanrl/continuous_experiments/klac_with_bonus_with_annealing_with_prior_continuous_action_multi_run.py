@@ -180,7 +180,7 @@ class Actor(nn.Module):
 
         return mean, log_std
 
-    def get_action(self, x, with_std=False):
+    def get_action(self, x, prior_log_std=None):
         mean, log_std = self(x)
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
@@ -192,8 +192,10 @@ class Actor(nn.Module):
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        if with_std:
-            return action, log_prob, mean, log_std
+        if prior_log_std:
+            normal_prior = torch.distributions.Normal(mean, prior_log_std)
+            log_prob_prior = normal_prior.log_prob(x_t)
+            return action, log_prob, mean, log_prob_prior
         return action, log_prob, mean
 
 
@@ -296,7 +298,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         lowest_return = np.inf
 
-        prior_mean = 0
         prior_std = 0
 
         # TRY NOT TO MODIFY: start the game
@@ -362,12 +363,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     for _ in range(
                         args.policy_frequency
                     ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
-                        pi, log_pi, log_std = actor.get_action(data.observations)
+                        pi, log_pi, log_std, prior_log_pi = actor.get_action(data.observations, prior_log_std=prior_std)
                         qf1_pi = qf1(data.observations, pi)
                         qf2_pi = qf2(data.observations, pi)
                         min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-                        rel_log_pi = (log_pi - log_ref).detach()
+                        rel_log_pi = (log_pi - prior_log_pi).detach()
                         kl_surrogate = rel_log_pi * log_pi  # adjust kl estimation according to
                         # On a few pitfalls in KL divergence gradient estimation for RL
                         actor_loss = ((alpha * kl_surrogate) - min_qf_pi).mean()
@@ -382,14 +383,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         current_target_kl = target_kl_start + progress_ratio * (target_kl_end - target_kl_start)
 
                         with torch.no_grad():
-                            _, log_pi, mean, log_std = actor.get_action(data.observations, with_std=True)
-                            kl_batch = 0.5 * (
-                                    ((log_std.exp() ** 2) / (prior_std ** 2))
-                                    + ((mean - prior_mean) ** 2) / (prior_std ** 2)
-                                    - 1
-                                    + 2 * (prior_std.log() - log_std)
-                            ).sum(dim=1, keepdim=True)
-                            kl_sample = kl_batch.detach()
+                            _, log_pi, mean, log_pi_prior = actor.get_action(data.observations, prior_log_std=prior_std)
+                            kl_sample = (log_pi - log_pi_prior).detach()
                         alpha_loss = (-log_alpha.exp() * (kl_sample + current_target_kl)).mean()
 
                         a_optimizer.zero_grad()
