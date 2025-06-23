@@ -255,8 +255,8 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     prior = priors[args.env_id]
 
-    # Outer loop: run training 5 times with different seeds.
-    for run_idx in range(5):
+    # Outer loop: run training 20 times with different seeds.
+    for run_idx in range(20):
         # Update the seed for the current run
         current_seed = args.seed + run_idx
         run_prefix = f"seed_{current_seed}"
