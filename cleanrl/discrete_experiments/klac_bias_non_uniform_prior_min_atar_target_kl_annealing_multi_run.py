@@ -46,7 +46,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 3000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""
@@ -349,6 +349,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
+            writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
+
             # Log episodic information.
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -462,15 +466,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
 
                     q_var = min_qf_values.var(dim=1, unbiased=False).mean().item()
-
-                # Update the target networks.
-                if global_step % args.target_network_frequency == 0:
-                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-                if global_step % 100 == 0:
                     writer.add_scalar(f"{run_prefix}/residuals/primal_feasibility", primal_residual, global_step)
                     writer.add_scalar(f"{run_prefix}/residuals/dual_feasibility", dual_residual, global_step)
                     writer.add_scalar(f"{run_prefix}/residuals/stationarity", stationarity_residual, global_step)
@@ -498,6 +493,15 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                             writer.add_scalar(f"{run_prefix}/metrics/a{idx}", freq, global_step)
                     # reset for the next window
                     action_counts[:] = 0
+
+                # Update the target networks.
+                if global_step % args.target_network_frequency == 0:
+                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+
+                if global_step % 100 == 0:
 
                     progress_bar.set_postfix({
                         "step": global_step,

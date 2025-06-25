@@ -315,6 +315,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
+            writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
+
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             if "final_info" in infos:
                 for info in infos["final_info"]:
@@ -394,14 +398,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
 
-                # update the target networks
-                if global_step % args.target_network_frequency == 0:
-                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-                if global_step % 100 == 0:
                     writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
@@ -414,6 +410,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
+
+                # update the target networks
+                if global_step % args.target_network_frequency == 0:
+                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+
+                if global_step % 100 == 0:
 
                     progress_bar.set_postfix({
                         "step": global_step,

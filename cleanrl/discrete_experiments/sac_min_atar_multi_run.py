@@ -45,7 +45,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "MinAtar/Asterix-v1"
     """the id of the environment"""
-    total_timesteps: int = 5000000
+    total_timesteps: int = 3000000
     """total timesteps of the experiments"""
     buffer_size: int = int(1e5)
     """the replay memory buffer size"""
@@ -268,6 +268,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         episode_returns = []
         episodic_lengths = []
         avg_return_normalised = alpha
+        num_actions = envs.single_action_space.n
+        print(f"num_actions: {num_actions}")
+
+        action_counts = np.zeros(num_actions, dtype=np.int64)
 
         lowest_return = np.inf
 
@@ -283,6 +287,10 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                 actions = actions.detach().cpu().numpy()
 
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+            writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
 
             # Log episodic information.
             if "final_info" in infos:
@@ -369,6 +377,52 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         a_optimizer.step()
                         alpha = log_alpha.exp().item()
 
+                    primal_residual = max(0.0, target_entropy - entropy)
+
+                    # 2) Dual‐feasibility residual: r_d = max(0, -alpha)
+                    dual_residual = max(0.0, -alpha)
+
+                    # 3) Stationarity/subgradient residual:
+                    #    if alpha>0: |H - H_target|, else: max(0, H_target - H)
+                    if alpha > 0.0:
+                        stationarity_residual = abs(entropy - target_entropy)
+                    else:
+                        stationarity_residual = max(0.0, target_entropy - entropy)
+
+                    # 4) Complementary‐slackness residual: r_cs = alpha * (H - H_target)
+                    complementary_slackness = alpha * (entropy - target_entropy)
+
+                    probs_with_bonus = torch.softmax(min_qf_values / alpha, dim=1)  # [B,A]
+
+                    entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
+
+                    q_var = min_qf_values.var(dim=1, unbiased=False).mean().item()
+
+                    writer.add_scalar(f"{run_prefix}/residuals/primal_feasibility", primal_residual, global_step)
+                    writer.add_scalar(f"{run_prefix}/residuals/dual_feasibility", dual_residual, global_step)
+                    writer.add_scalar(f"{run_prefix}/residuals/stationarity", stationarity_residual, global_step)
+                    writer.add_scalar(f"{run_prefix}/residuals/complementary_slackness", complementary_slackness,
+                                      global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf2_loss", qf2_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/qf_loss", qf_loss.item() / 2.0, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/actor_loss", actor_loss.item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/q_variance", q_var, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/alpha", alpha, global_step)
+                    writer.add_scalar(f"{run_prefix}/losses/alpha_used", alpha_used, global_step)
+                    sps = int(global_step / (time.time() - start_time))
+                    writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
+                    if args.autotune:
+                        writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
+                    actions_in_window = action_counts.sum()
+                    if actions_in_window:  # avoid division by zero
+                        freq_window = action_counts / actions_in_window
+                        for idx, freq in enumerate(freq_window):
+                            writer.add_scalar(f"{run_prefix}/metrics/a{idx}", freq, global_step)
+
                 # Update the target networks.
                 if global_step % args.target_network_frequency == 0:
                     for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
@@ -377,20 +431,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                         target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
 
                 if global_step % 100 == 0:
-                    writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf2_loss", qf2_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/actor_loss", actor_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/alpha", alpha, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/alpha_used", alpha_used, global_step)
-                    sps = int(global_step / (time.time() - start_time))
-                    writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
-                    if args.autotune:
-                        writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
-
                     progress_bar.set_postfix({
                         "step": global_step,
                         "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",

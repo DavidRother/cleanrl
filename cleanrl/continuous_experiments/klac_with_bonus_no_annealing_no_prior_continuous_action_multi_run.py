@@ -180,10 +180,10 @@ class Actor(nn.Module):
 
         return mean, log_std
 
-    def get_action(self, x):
-        mean, log_std = self(x)
-        std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
+    def get_action(self, x, with_raw=False):
+        raw_mean, raw_log_std = self(x)
+        std = raw_log_std.exp()
+        normal = torch.distributions.Normal(raw_mean, std)
         x_t = normal.rsample()  # for reparameterization trick (mean + std * N(0,1))
         y_t = torch.tanh(x_t)
         action = y_t * self.action_scale + self.action_bias
@@ -191,8 +191,11 @@ class Actor(nn.Module):
         # Enforcing Action Bound
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
-        mean = torch.tanh(mean) * self.action_scale + self.action_bias
-        return action, log_prob, mean
+        mean = torch.tanh(raw_mean) * self.action_scale + self.action_bias
+        if with_raw:
+            return action, log_prob, mean, raw_mean, raw_log_std
+        else:
+            return action, log_prob, mean
 
 
 if __name__ == "__main__":
@@ -299,11 +302,18 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if global_step < args.learning_starts:
                 actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
             else:
-                actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
+                actions, _, _, raw_mean, raw_log_std = actor.get_action(torch.Tensor(obs).to(device), with_raw=True)
                 actions = actions.detach().cpu().numpy()
+
+                writer.add_histogram(f"{run_prefix}/vectors/actions", raw_mean, global_step)
+                writer.add_histogram(f"{run_prefix}/vectors/log_std", raw_log_std, global_step)
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+
+            writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
+            writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             if "final_info" in infos:
@@ -380,15 +390,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                             alpha_loss.backward()
                             a_optimizer.step()
                             alpha = log_alpha.exp().item()
-
-                # update the target networks
-                if global_step % args.target_network_frequency == 0:
-                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
-                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
-
-                if global_step % 100 == 0:
                     writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
                     writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
@@ -402,6 +403,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
 
+
+                # update the target networks
+                if global_step % args.target_network_frequency == 0:
+                    for param, target_param in zip(qf1.parameters(), qf1_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+                    for param, target_param in zip(qf2.parameters(), qf2_target.parameters()):
+                        target_param.data.copy_(args.tau * param.data + (1 - args.tau) * target_param.data)
+
+                if global_step % 100 == 0:
                     progress_bar.set_postfix({
                         "step": global_step,
                         "return": f"{float(latest_return):.2f}" if latest_return is not None else "N/A",
