@@ -391,7 +391,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         with torch.no_grad():
                             _, log_pi, _ = actor.get_action(data.observations)
                             kl_sample = log_pi - log_ref
-                        alpha_loss = (-log_alpha.exp() * (kl_sample + current_target_kl)).mean()
+                        alpha_loss = (-log_alpha.exp() * (kl_sample - current_target_kl)).mean()
 
                         a_optimizer.zero_grad()
                         alpha_loss.backward()

@@ -435,7 +435,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
                     # dual update for α:
                     kl_detached = kl_per_state.detach()
-                    alpha_loss = -(log_alpha.exp() * (kl_detached - current_target_kl)).mean()
+                    alpha_loss = (-log_alpha.exp() * (kl_detached + current_target_kl)).mean()
                     a_optimizer.zero_grad()
                     alpha_loss.backward()
                     a_optimizer.step()
