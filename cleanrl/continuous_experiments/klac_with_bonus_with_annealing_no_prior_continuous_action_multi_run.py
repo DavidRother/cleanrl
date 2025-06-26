@@ -15,6 +15,8 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 import tqdm
 import math
+import h5py
+from pathlib import Path
 
 
 @dataclass
@@ -37,7 +39,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "HalfCheetah-v4"
+    env_id: str = "Swimmer-v5"
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -66,8 +68,8 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     n_runs: int = 20
-    p_start: float = 0.5
-    p_end: float = 0.8
+    p_start: float = 0.7
+    p_end: float = 0.95
     half_width: float = 0.25
     bonus_term: float = 0.05
 
@@ -78,7 +80,7 @@ def make_env(env_id, seed, idx, capture_video, run_name):
             env = gym.make(env_id, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
             env = gym.wrappers.NormalizeReward(env)
-        else:
+        else:   # flush left-overs
             env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
@@ -125,23 +127,33 @@ def _gaussian_entropy(sigma: float, d: int) -> float:
 
 def continuous_uniform_prior_bounds(
     action_space: gym.spaces.Box,
-    p_start: float = 0.50,
-    p_end:   float = 0.80,
+    p_start: float = 0.70,
+    p_end:   float = 0.95,
     region_half_width_ratio: float = 0.25,
 ):
     if not isinstance(action_space, gym.spaces.Box):
-        raise TypeError("`action_space` must be gym.spaces.Box (continuous).")
+        raise TypeError("action_space must be gym.spaces.Box (continuous).")
 
-    d = int(np.prod(action_space.shape))                # action dimension
+    d = int(np.prod(action_space.shape))
+
+    # volume (= |A|) and its log-entropy for the uniform prior
     full_range = action_space.high - action_space.low
+    log_volume = float(np.log(np.prod(full_range)))      # log |A|  ≥ 0
+
+    # radius of the “exploitation region”
     r = float(np.min(full_range) * 0.5 * region_half_width_ratio)
 
-    # σ that realises the requested exploitation probabilities
-    sigma_high = _sigma_from_p(p_start, r, d)           # wider ⇒ more exploration
-    sigma_low  = _sigma_from_p(p_end,   r, d)           # tighter ⇒ more exploitation
+    # entropies for the two sigmas
+    sigma_high = _sigma_from_p(p_start, r, d)  # more exploratory
+    sigma_low = _sigma_from_p(p_end,   r, d)  # more exploitative
+    ent_high = _gaussian_entropy(sigma_high, d)
+    ent_low = _gaussian_entropy(sigma_low,  d)
 
-    return _gaussian_entropy(sigma_high, d), _gaussian_entropy(sigma_low,  d)
+    # finally, KL = log |A| – H(π)
+    kl_low = log_volume - ent_high   # low KL  (looser constraint, more exploration)
+    kl_high = log_volume - ent_low    # high KL (tighter constraint, more exploitation)
 
+    return kl_low, kl_high
 
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
@@ -198,6 +210,45 @@ class Actor(nn.Module):
             return action, log_prob, mean
 
 
+class LogStdDumper:
+    """
+    Collect raw_log_std vectors and push them to an on-disk HDF5 dataset.
+    Flushes every `flush_every` steps to avoid 1 M tiny writes.
+    """
+    def __init__(self, path: Path, total_steps: int, action_dim: int,
+                 flush_every: int = 1_000):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.h5 = h5py.File(path, "w")
+        self.dset = self.h5.create_dataset(
+            "log_std",
+            shape =(total_steps, action_dim),
+            maxshape =(None,        action_dim),
+            dtype ="f4",
+            chunks =(flush_every, action_dim)
+        )
+        self.buf = []
+        self.step0 = 0
+        self.flush_every = flush_every
+
+    def add(self, step: int, tensor: torch.Tensor):
+        self.buf.append(tensor.cpu().numpy().astype("f4", copy=False))
+        if len(self.buf) >= self.flush_every:
+            self._flush(step + 1 - len(self.buf))
+
+    def _flush(self, start_step: int):
+        if not self.buf:
+            return
+        block = np.stack(self.buf, axis=0)
+        end_step = start_step + len(self.buf)
+        self.dset[start_step:end_step, :] = block
+        self.h5.flush()
+        self.buf.clear()
+
+    def close(self, final_step: int):
+        self._flush(final_step + 1 - len(self.buf))
+        self.h5.close()
+
+
 if __name__ == "__main__":
     import stable_baselines3 as sb3
 
@@ -235,8 +286,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # Update the seed for the current run
         current_seed = args.seed + run_idx
         run_prefix = f"seed_{current_seed}"
-        folder_name = f"{args.env_id}__{args.exp_name}"
-        run_name = f"folder_name__{run_prefix}__{int(time.time())}"
         print(f"Starting run: {run_prefix}")
 
         # (Re)seed randomness for current run
@@ -283,6 +332,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         )
         start_time = time.time()
 
+        action_dim = int(np.prod(envs.single_action_space.shape))
+        logstd_path = Path(f"runs_experiment/{run_name}") / f"{run_prefix}_log_std.h5"
+        logstd_dumper = LogStdDumper(path=logstd_path, total_steps=args.total_timesteps, action_dim=action_dim,
+                                     flush_every=1_000)
+
         progress_bar = tqdm.trange(args.total_timesteps, desc=f"Training {run_prefix}", dynamic_ncols=True)
         latest_return = None
         episode_returns = []
@@ -299,6 +353,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         log_ref = -torch.log(2 * actor.action_scale).sum()
 
+        raw_log_stds = []
+
         # TRY NOT TO MODIFY: start the game
         obs, _ = envs.reset(seed=args.seed)
         for global_step in progress_bar:
@@ -308,39 +364,32 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             else:
                 actions, _, _, raw_mean, raw_log_std = actor.get_action(torch.Tensor(obs).to(device), with_raw=True)
                 actions = actions.detach().cpu().numpy()
-
-                writer.add_histogram(f"{run_prefix}/vectors/actions", raw_mean, global_step)
-                writer.add_histogram(f"{run_prefix}/vectors/log_std", raw_log_std, global_step)
+                logstd_dumper.add(global_step, raw_log_std.squeeze(0).detach())
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            episode_start = np.logical_or(terminations, truncations)
 
             writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
             writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
             writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    if "episode" not in info:
-                        continue
-                    episodic_return = info["episode"]["r"]
-                    episodic_length = info["episode"]["l"]
-                    latest_return = episodic_return
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
+            if "episode" in infos:
+                episodic_return = infos["episode"]["r"]
+                episodic_length = infos["episode"]["l"]
+                latest_return = episodic_return
+                writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
+                writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
 
-                    episode_returns.append(episodic_return)
-                    episodic_lengths.append(episodic_length)
-                    break
+                episode_returns.append(episodic_return)
+                episodic_lengths.append(episodic_length)
 
             # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-            real_next_obs = next_obs.copy()
-            for idx, trunc in enumerate(truncations):
-                if trunc:
-                    real_next_obs[idx] = infos["final_observation"][idx]
-            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+            rb.add(obs, next_obs, actions, rewards, terminations, infos)
 
+            if episode_start:
+                next_obs, rewards, terminations, truncations, infos = envs.step(actions)
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
             obs = next_obs
 
@@ -408,6 +457,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     sps = int(global_step / (time.time() - start_time))
                     writer.add_scalar(f"{run_prefix}/charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                     writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/mean_kl", kl_sample.mean().item(), global_step)
+                    writer.add_scalar(f"{run_prefix}/charts/target_kl", current_target_kl, global_step)
                     if args.autotune:
                         writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
 

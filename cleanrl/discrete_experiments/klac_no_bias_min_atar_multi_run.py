@@ -12,6 +12,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import tyro
 import tqdm
+import minatar.gym
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
     EpisodicLifeEnv,
@@ -203,6 +204,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         global_step=0,
     )
 
+    minatar.gym.register_envs()
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     for run_idx in range(args.n_runs):
@@ -256,6 +258,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         progress_bar = tqdm.trange(args.total_timesteps, desc="Training", dynamic_ncols=True)
         latest_return = None
         episode_returns = []
+        episodic_lengths = []
 
         # TRY NOT TO MODIFY: start the game
         obs, _ = envs.reset(seed=current_seed)
@@ -270,42 +273,28 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             action_counts += np.bincount(actions, minlength=num_actions)
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+            episode_start = np.logical_or(terminations, truncations)
 
             writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
             writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
             writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    # Skip the envs that are not done
-                    if "episode" not in info:
-                        continue
-                    episodic_return = info["episode"]["r"]
-                    episodic_length = info["episode"]["l"]
-                    latest_return = episodic_return
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
+            if "episode" in infos:
+                episodic_return = infos["episode"]["r"]
+                episodic_length = infos["episode"]["l"]
+                latest_return = episodic_return
+                writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
+                writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
 
-                    # Track the average episodic return over the last 50 episodes
-                    episode_returns.append(episodic_return)
-                    if len(episode_returns) > 50:
-                        episode_returns.pop(0)
-                    avg_return = sum(episode_returns) / len(episode_returns)
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_avg", avg_return, global_step)
-
-                    # Track (episodic return / episodic length) minus the current alpha
-                    adjusted_metric = avg_return - alpha
-                    writer.add_scalar(f"{run_prefix}/charts/episodic_return_adjusted", adjusted_metric, global_step)
-                    break
+                episode_returns.append(episodic_return)
+                episodic_lengths.append(episodic_length)
 
             # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-            real_next_obs = next_obs.copy()
-            for idx, (trunc, term) in enumerate(zip(truncations, terminations)):
-                if trunc or term:
-                    real_next_obs[idx] = infos["final_observation"][idx]
-            rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
+            rb.add(obs, next_obs, actions, rewards, terminations, infos)
 
+            if episode_start:
+                next_obs, rewards, terminations, truncations, infos = envs.step(actions)
             # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
             obs = next_obs
 
