@@ -304,9 +304,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 actions, _, _, raw_mean, raw_log_std = actor.get_action(torch.Tensor(obs).to(device), with_raw=True)
                 actions = actions.detach().cpu().numpy()
 
-                writer.add_histogram(f"{run_prefix}/vectors/actions", raw_mean, global_step)
-                writer.add_histogram(f"{run_prefix}/vectors/log_std", raw_log_std, global_step)
-
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
             episode_start = np.logical_or(terminations, truncations)
