@@ -39,7 +39,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Swimmer-v5"
+    env_id: str = "HalfCheetah-v5"
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -68,8 +68,8 @@ class Args:
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
     n_runs: int = 20
-    p_start: float = 0.7
-    p_end: float = 0.95
+    p_start: float = 0.5
+    p_end: float = 0.99
     half_width: float = 0.25
     bonus_term: float = 0.05
 
