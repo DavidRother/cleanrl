@@ -82,13 +82,13 @@ def maybe_dump_pickle(path, runs_steps, runs_vals, label):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # ap = argparse.ArgumentParser()
-    # ap.add_argument("-f", "--folder", required=True,
-    #                 help="Substring that must appear in the run-folder name")
-    # args = ap.parse_args()
-    # substr = args.folder.lower()
-    #
-    substr = "invertedpendulum"
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-f", "--folder", required=True,
+                    help="Substring that must appear in the run-folder name")
+    args = ap.parse_args()
+    substr = args.folder.lower()
+
+    # substr = "invertedpendulum"
 
     folder_names = [name for name in os.listdir(ROOT) if substr in name.lower()]
 
