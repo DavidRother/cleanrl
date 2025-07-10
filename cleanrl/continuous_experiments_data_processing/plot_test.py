@@ -4,9 +4,10 @@ import matplotlib.pyplot as plt
 
 # ------------------------------------------------------------------
 # EDIT ME ───────────────────────────────────────────────────────────
+# Walker2d-v5__klac_with_bonus_with_annealing_no_prior_continuous_action_multi_run__1__1751216478
 h5_path = (
-    "Ant-v5__klac_no_bonus_no_annealing_no_prior_continuous_action_multi_run__1__1751453930/"
-    "rewards.h5"
+    f"/hri/rawstreams/project/klac_2026-01/cleaned_data/Walker2d-v5__sac_continuous_action_multi_run__1__1751027708/"
+    "rewards_episodic_return.h5"
 )
 # ------------------------------------------------------------------
 

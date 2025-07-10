@@ -140,15 +140,17 @@ if __name__ == "__main__":
 
     ROOT = "/hri/rawstreams/project/klac_2026-01/"
 
-    p = argparse.ArgumentParser()
-    p.add_argument("-f", "--folder", required=True, help="Substring that must appear in the run-folder name")
-    args = p.parse_args()
+    # p = argparse.ArgumentParser()
+    # p.add_argument("-f", "--folder", required=True, help="Substring that must appear in the run-folder name")
+    # args = p.parse_args()
+    #
+    # substr = args.folder.lower()
 
-    substr = args.folder.lower()
+    substr = "invertedpendulum"
 
     folder_names = [
         name for name in os.listdir(ROOT)
-        if name != "MinAtar" and os.path.isdir(os.path.join(ROOT, name)) and substr in name.lower()
+        if substr in name.lower()
     ]
 
     for folder_name in folder_names:
