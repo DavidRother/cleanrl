@@ -37,7 +37,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "HalfCheetah-v4"
+    env_id: str = "Swimmer-v5"
     """the environment id of the task"""
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
@@ -303,9 +303,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             else:
                 actions, _, _, raw_mean, raw_log_std = actor.get_action(torch.Tensor(obs).to(device), with_raw=True)
                 actions = actions.detach().cpu().numpy()
-
-                writer.add_histogram(f"{run_prefix}/vectors/actions", raw_mean, global_step)
-                writer.add_histogram(f"{run_prefix}/vectors/log_std", raw_log_std, global_step)
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
