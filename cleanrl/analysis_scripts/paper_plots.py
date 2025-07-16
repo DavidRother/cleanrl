@@ -58,9 +58,9 @@ sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
 MUJOCO_ENVS = ("Hopper", "Walker2d", "HalfCheetah", "Ant", "InvertedPendulum", "Humanoid", "Swimmer", "Reacher")
 N_COLS, N_ROWS = 4, 2
-MAX_STEPS = 3000000
+MAX_STEPS = 1000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 100)
-SMOOTH_WINDOW = 1000
+SMOOTH_WINDOW = 400
 colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
 
 # ---------- helpers ----------------------------------------------------------------------
