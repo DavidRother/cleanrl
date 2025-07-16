@@ -67,7 +67,7 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
-    n_runs: int = 20
+    n_runs: int = 3
     p_start: float = 0.5
     p_end: float = 0.8
     half_width: float = 0.25
