@@ -109,19 +109,19 @@ def dump_pickle(path: Path, steps_list, vals_list, label: str):
 
 # ── main ─────────────────────────────────────────────────────────────────────
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--root", required=True,
-                    help="Top-level folder that contains the run directories "
-                         "(e.g. runs_experiment).")
-    ap.add_argument("--match", default="",
-                    help="Only process run folders whose *name* contains this "
-                         "substring (case-insensitive).")
-    args = ap.parse_args()
-    root = args.root
-    match = args.match
-    #
-    # match = "asterix"
-    # root = "/hri/rawstreams/project/klac_2026-01/MinAtar/"
+    # ap = argparse.ArgumentParser()
+    # ap.add_argument("--root", required=True,
+    #                 help="Top-level folder that contains the run directories "
+    #                      "(e.g. runs_experiment).")
+    # ap.add_argument("--match", default="",
+    #                 help="Only process run folders whose *name* contains this "
+    #                      "substring (case-insensitive).")
+    # args = ap.parse_args()
+    # root = args.root
+    # match = args.match
+
+    match = "asterix"
+    root = "/hri/rawstreams/project/klac_2026-01/MinAtar/"
 
     root = Path(root).expanduser().resolve()
 

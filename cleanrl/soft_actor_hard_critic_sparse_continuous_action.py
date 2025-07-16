@@ -13,7 +13,7 @@ import torch.optim as optim
 import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
-from cleanrl.mujoco_sparse_wrapper.half_cheetah_v4 import SparseMujoco
+from cleanrl.mujoco_sparse_wrapper.mujoco_wrapper import SparseMujoco
 import tqdm
 import math
 
