@@ -1,33 +1,4 @@
-#!/usr/bin/env python3
-"""
-Figure builder for: *Maximum Relative Entropy Reinforcement Learning*
-========================================================
-Generates the four plots that are referenced in the draft:
 
-    Fig. 1  Learning curves on **MinAtar** (SAC vs. KLAC)      (§6.5.1)
-    Fig. 2  Learning curves on MuJoCo (all 4 envs aggregated) (§6.5.2)
-    Fig. 3  Q–values over training time                      (§6.5.3)
-    Fig. 4  AUC (sample-efficiency) comparison               (§6.5.4)
-
-The script follows the figure–formatting rules implicit in the
-TMLR LaTeX template:
-
-  * single-column width  = 3.25 inch  (≈ 8.25 cm)
-  * max-height           = 2.1 inch   (≈ 5.3 cm)
-  * serif text (Computer Modern) to match the template
-  * 7 pt axis labels / 6 pt tick labels (never < 5 pt)
-  * colour-blind-safe palette (`matplotlib.tab10`)
-  * 0.9 pt lines, 0.75 pt box-spines
-
-Requirements
-------------
-* Python ≥ 3.9
-* numpy, pandas, matplotlib, seaborn (optional for smoothing)
-
-Example
--------
-$ python make_tmlr_figures.py --root /hri/rawstreams/project/klac_2026-01/
-"""
 from __future__ import annotations
 import argparse
 import pickle
@@ -39,6 +10,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
+from scipy.interpolate import interp1d
+
 
 # ---------- matplotlib defaults for TMLR -------------------------------------------------
 mpl.rcParams.update({
@@ -57,6 +30,11 @@ sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
 MINATAR_ENVS = ("Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders")
 N_COLS, N_ROWS = 5, 1
+MAX_STEPS = 3000000
+EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 100)
+SMOOTH_WINDOW = 1000
+colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -79,16 +57,43 @@ def add_global_legend(fig, variant_labels, colour_cycle):
 
 def aggregate_runs(steps_list: List[np.ndarray],
                    vals_list:  List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Interpolate runs onto a common step grid, then return mean & 95 % CI."""
-    # choose the union of all step counts
-    grid = np.unique(np.concatenate(steps_list))
     runs = []
     for s, v in zip(steps_list, vals_list):
-        runs.append(np.interp(grid, s, v))
-    runs = np.vstack(runs)
-    mean = runs.mean(axis=0)
-    ci   = 1.96 * runs.std(axis=0) / np.sqrt(runs.shape[0])
-    return grid, mean, ci
+        _, interp_vals = interpolate_run(s, v, EVAL_STEPS)
+        smoothed = smooth(interp_vals, SMOOTH_WINDOW)
+        runs.append(smoothed)
+    mean, lo, hi = bootstrap_ci_vectorized(np.array(runs))
+    mean = smooth(mean, SMOOTH_WINDOW)
+    lo = smooth(lo, SMOOTH_WINDOW)
+    hi = smooth(hi, SMOOTH_WINDOW)
+    return mean, lo, hi
+
+
+def bootstrap_ci_vectorized(S, B=1000, alpha=0.05):
+    N, T = S.shape
+    mean = np.mean(S, axis=0)
+    indices = np.random.randint(0, N, size=(B, N, T))
+    boot_samples = S[indices, np.arange(T)]
+    boot_means = np.mean(boot_samples, axis=1)
+    ci_lower, ci_upper = np.percentile(
+        boot_means, [100 * alpha / 2, 100 * (1 - alpha / 2)], axis=0
+    )
+    return mean, ci_lower, ci_upper
+
+def smooth(x, weight):
+    y = np.ones(weight)
+    z = np.ones(len(x))
+    return np.convolve(x, y, "same") / np.convolve(z, y, "same")
+
+def interpolate_run(steps, returns, eval_steps):
+    interp_fn = interp1d(
+        steps,
+        returns,
+        kind="previous",
+        bounds_error=False,
+        fill_value=(returns[0], returns[-1]),
+    )
+    return eval_steps, interp_fn(eval_steps)
 
 
 def cumtrapz_np(y: np.ndarray, x: np.ndarray) -> np.ndarray:
@@ -166,27 +171,23 @@ def plot_learning_curves_minatar(metrics, out_path):
         sharey=False
     )
     axes = axes.flatten()
-    colours = sns.color_palette("tab10")
     variants = sorted(metrics.keys())
 
     for env_ax, env in zip(axes, MINATAR_ENVS):
         for i, variant in enumerate(variants):
             if env not in metrics[variant]:
                 continue
-            steps, mean, ci = aggregate_runs(*metrics[variant][env]["return"])
-            env_ax.plot(steps, mean,
-                        label=variant,
-                        color=colours[i % len(colours)],
-                        linewidth=0.9)
-            env_ax.fill_between(steps, mean-ci, mean+ci,
-                                color=colours[i % len(colours)],
-                                alpha=.25, linewidth=0)
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2, facecolor=colors[i])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
+                        color=colors[i], label=variant)
         env_ax.set_title(env, fontsize=7)
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
     axes[0].set_ylabel("Episodic return")
-    add_global_legend(fig, variants, colours)
+    add_global_legend(fig, variants, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_file_svg = out_path / "fig2_minatar_curves_per_env.svg"
     out_file_png = out_path / "fig2_minatar_curves_per_env.png"
@@ -200,27 +201,23 @@ def plot_q_values_per_env(metrics, out_path):
                              figsize=(fig_w, fig_h),
                              sharey=False)
     axes = axes.flatten()
-    colours = sns.color_palette("tab10")
     variants = sorted(metrics.keys())
 
     for env_ax, env in zip(axes, MINATAR_ENVS):
         for i, variant in enumerate(variants):
             if env not in metrics[variant] or "q" not in metrics[variant][env]:
                 continue
-            steps, mean, ci = aggregate_runs(*metrics[variant][env]["q"])
-            env_ax.plot(steps, mean,
-                        label=variant,
-                        color=colours[i % len(colours)],
-                        linewidth=0.9)
-            env_ax.fill_between(steps, mean-ci, mean+ci,
-                                color=colours[i % len(colours)],
-                                alpha=.25, linewidth=0)
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2, facecolor=colors[i])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
+                        color=colors[i], label=variant)
         env_ax.set_title(env, fontsize=7)
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
     axes[0].set_ylabel(r"$Q_t$ (critic)")
-    add_global_legend(fig, variants, colours)
+    add_global_legend(fig, variants, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_file_svg = out_path / "fig3_minatar_q_values_per_env.svg"
     out_file_png = out_path / "fig3_minatar_q_values_per_env.png"
@@ -254,7 +251,6 @@ def plot_auc_curves_per_env(metrics, out_path):
                              sharey=True,
                              sharex="none")
     axes = axes.flatten()
-    colours = sns.color_palette("tab10")
     variants = sorted(metrics.keys())
 
     for env_ax, env in zip(axes, MINATAR_ENVS):
@@ -265,14 +261,14 @@ def plot_auc_curves_per_env(metrics, out_path):
             auc_cum = cumtrapz_np(mean, steps) / steps
             env_ax.plot(steps, auc_cum,
                         label=variant,
-                        color=colours[i % len(colours)],
+                        color=colors[i],
                         linewidth=0.9)
         env_ax.set_title(env, fontsize=7)
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
     axes[0].set_ylabel("Cumulative AUC / step")
-    add_global_legend(fig, variants, colours)
+    add_global_legend(fig, variants, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_file_svg = out_path / "fig4_minatar_auc_per_env.svg"
     out_file_png = out_path / "fig4_minatar_auc_per_env.png"
