@@ -12,6 +12,7 @@ import torch.optim as optim
 import tyro
 import tqdm
 import math
+import pickle
 import minatar.gym
 from stable_baselines3.common.atari_wrappers import (
     ClipRewardEnv,
@@ -190,6 +191,57 @@ class SoftQNetwork(nn.Module):
         return q_vals
 
 
+class PickleLogger:
+    """
+    Collect (step,value) pairs for several runs and dump them in the format
+       {"steps": [np.ndarray, …], "vals": [np.ndarray, …]}
+    that your downstream code already expects.
+    """
+    def __init__(self):
+        self._store = {
+            "return":  ([], []),   # (list_of_steps_arrays, list_of_vals_arrays)
+            "entropy": ([], []),
+            "q":       ([], []),
+        }
+        # per-run scratch buffers
+        self._curr_steps = {k: [] for k in self._store}
+        self._curr_vals  = {k: [] for k in self._store}
+
+    # ── during training ──────────────────────────────────────────────────
+    def record(self, key: str, step: int, value: float):
+        self._curr_steps[key].append(step)
+        self._curr_vals[key].append(value)
+
+    # ── after *one* seed/run finishes ────────────────────────────────────
+    def seal_run(self):
+        for key in self._store:
+            if self._curr_steps[key]:                       # nothing ⇒ skip
+                self._store[key][0].append(
+                    np.asarray(self._curr_steps[key], dtype=np.int64))
+                self._store[key][1].append(
+                    np.asarray(self._curr_vals[key],  dtype=np.float32))
+        # reset scratch buffers
+        for key in self._curr_steps:
+            self._curr_steps[key].clear()
+            self._curr_vals[key].clear()
+
+    # ── once, after all runs ─────────────────────────────────────────────
+    def dump_all(self, out_dir: str | os.PathLike):
+        os.makedirs(out_dir, exist_ok=True)
+        fn_map = {"return": "episodic_return.pkl",
+                  "entropy": "entropy.pkl",
+                  "q":       "q_values.pkl"}
+        for key, (steps, vals) in self._store.items():
+            if not steps:                                  # no data at all
+                print(f"[INFO] no {key} series collected – nothing written.")
+                continue
+            path = os.path.join(out_dir, fn_map[key])
+            with open(path, "wb") as f:
+                pickle.dump({"steps": steps, "vals": vals},
+                            f, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"[INFO] wrote {key:7s} → {path}")
+
+
 class Actor(nn.Module):
     def __init__(self, envs):
         super().__init__()
@@ -234,15 +286,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         )
     args = tyro.cli(Args)
 
-    # Create one shared TensorBoard writer that will log all runs into the same folder.
-    writer = SummaryWriter(f"runs_experiment/{args.env_id}__{args.exp_name}__{int(time.time())}")
-    # You can also add the hyperparameters text once (they remain common across runs)
-    writer.add_text(
-        "global_hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
-        global_step=0,
-    )
-
+    pickle_logger = PickleLogger()
     minatar.gym.register_envs()
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
@@ -270,20 +314,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         np.random.seed(current_seed)
         torch.manual_seed(current_seed)
         torch.backends.cudnn.deterministic = args.torch_deterministic
-
-        # Optional: If tracking with wandb, initialize a new run.
-        if args.track:
-            import wandb
-
-            wandb.init(
-                project=args.wandb_project_name,
-                entity=args.wandb_entity,
-                sync_tensorboard=True,
-                config=vars(args),
-                name=run_name,
-                monitor_gym=True,
-                save_code=True,
-            )
 
         # Set up the vectorized environment.
         envs = gym.vector.SyncVectorEnv(
@@ -351,17 +381,12 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
             next_obs, rewards, terminations, truncations, infos = envs.step(actions)
             episode_start = np.logical_or(terminations, truncations)
 
-            writer.add_scalar(f"{run_prefix}/charts/reward", rewards[0], global_step)
-            writer.add_scalar(f"{run_prefix}/charts/terminations", terminations[0], global_step)
-            writer.add_scalar(f"{run_prefix}/charts/truncations", truncations[0], global_step)
-
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             if "episode" in infos:
                 episodic_return = infos["episode"]["r"]
                 episodic_length = infos["episode"]["l"]
                 latest_return = episodic_return
-                writer.add_scalar(f"{run_prefix}/charts/episodic_return", episodic_return, global_step)
-                writer.add_scalar(f"{run_prefix}/charts/episodic_length", episodic_length, global_step)
+                pickle_logger.record("return", global_step, float(episodic_return))
 
                 episode_returns.append(episodic_return)
                 episodic_lengths.append(episodic_length)
@@ -451,31 +476,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     entropy_with_bonus = -(probs_with_bonus * probs_with_bonus.log()).sum(dim=1).mean().item()
 
                     q_var = min_qf_values.var(dim=1, unbiased=False).mean().item()
-                    writer.add_scalar(f"{run_prefix}/residuals/primal_feasibility", primal_residual, global_step)
-                    writer.add_scalar(f"{run_prefix}/residuals/dual_feasibility", dual_residual, global_step)
-                    writer.add_scalar(f"{run_prefix}/residuals/stationarity", stationarity_residual, global_step)
-                    writer.add_scalar(f"{run_prefix}/residuals/complementary_slackness", complementary_slackness, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf1_values", qf1_a_values.mean().item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf2_values", qf2_a_values.mean().item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf1_loss", qf1_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf2_loss", qf2_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/qf_loss", qf_loss.item() / 2.0, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/actor_loss", actor_loss.item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/q_entropy_with_bonus", entropy_with_bonus, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/q_variance", q_var, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/alpha", alpha, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/alpha_used", alpha_used, global_step)
                     sps = int(global_step / (time.time() - start_time))
-                    writer.add_scalar(f"{run_prefix}/charts/SPS", sps, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_entropy", entropy, global_step)
-                    writer.add_scalar(f"{run_prefix}/charts/mean_policy_kl", kl_detached.mean().item(), global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/current_target_kl", current_target_kl, global_step)
-                    writer.add_scalar(f"{run_prefix}/losses/alpha_loss", alpha_loss.item(), global_step)
-                    actions_in_window = action_counts.sum()
-                    if actions_in_window:  # avoid division by zero
-                        freq_window = action_counts / actions_in_window
-                        for idx, freq in enumerate(freq_window):
-                            writer.add_scalar(f"{run_prefix}/metrics/a{idx}", freq, global_step)
+                    pickle_logger.record("entropy", global_step, float(entropy))
+                    pickle_logger.record("q", global_step, float(qf1_a_values.mean()))
                     # reset for the next window
                     action_counts[:] = 0
 
@@ -495,11 +498,9 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
                     })
 
         # End of training for this run.
+        pickle_logger.seal_run()
         envs.close()
 
-        # Save the final actor model into the TensorBoard folder.
-        model_save_path = os.path.join(writer.log_dir, f"final_model_{run_prefix}.pt")
-        torch.save(actor.state_dict(), model_save_path)
-        print(f"Saved final model for {run_prefix} to {model_save_path}")
+    out_dir = f"/hri/rawstreams/project/klac_2026-01/SparseContinuous/{args.env_id}_{args.exp_name}_pickles"
+    pickle_logger.dump_all(out_dir)
 
-    writer.close()
