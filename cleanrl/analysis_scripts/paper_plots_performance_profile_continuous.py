@@ -36,9 +36,8 @@ def load_pickle(path: Path):
 
 
 def detect_variant(run_dir_name: str) -> str:
-    """Same heuristic as your original script."""
     try:
-        descriptor = run_dir_name.split("__", 1)[1].lower()
+        descriptor = run_dir_name.split("__", maxsplit=2)[1].lower()
     except IndexError:
         descriptor = run_dir_name.lower()
 
@@ -47,13 +46,14 @@ def detect_variant(run_dir_name: str) -> str:
 
     if descriptor.startswith("klac"):
         flags = []
-        if "klac_bias" in descriptor:
+        if "with_bonus"      in descriptor:
             flags.append("bonus")
-        if "annealing" in descriptor:
+        if "with_annealing"  in descriptor:
             flags.append("anneal")
-        if "non_uniform_prior" in descriptor:
+        if "with_prior"      in descriptor:
             flags.append("prior")
-        return "KLAC" + (("+" + "+".join(flags)) if flags else "")
+        label = "KLAC" + (("+" + "+".join(flags)) if flags else "")
+        return label
 
     return "UNKNOWN"
 
@@ -95,7 +95,7 @@ def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean) -
 
 
 if __name__ == "__main__":
-    ROOT = Path("/hri/rawstreams/project/klac_2026-01/MinAtar/")
+    ROOT = Path("/hri/rawstreams/project/klac_2026-01/")
     OUTDIR = Path("../paper_plots/")
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -113,8 +113,7 @@ if __name__ == "__main__":
 
     aggregate_vec = lambda x: np.array([
         metrics.aggregate_mean(x),
-        metrics.aggregate_iqm(x),
-        metrics.aggregate_median(x)
+        metrics.aggregate_iqm(x)
     ])
 
     point_est, ci_bounds = rly.get_interval_estimates(
@@ -158,6 +157,6 @@ if __name__ == "__main__":
     # fig.supxlabel('SAC normalised Scores (±95 % bootstrap CI)', y=0.04, fontsize=14, va='center')
 
     fig.tight_layout()
-    fig.savefig(OUTDIR / 'minatar_iqm_barplot.svg', format="svg", bbox_inches="tight")
-    fig.savefig(OUTDIR / 'minatar_iqm_barplot.png', format="png", dpi=300, bbox_inches="tight")
+    fig.savefig(OUTDIR / 'mujoco_iqm_barplot.svg', format="svg", bbox_inches="tight")
+    fig.savefig(OUTDIR / 'mujoco_iqm_barplot.png', format="png", dpi=300, bbox_inches="tight")
     plt.show()

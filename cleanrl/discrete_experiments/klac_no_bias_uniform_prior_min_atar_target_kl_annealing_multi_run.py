@@ -501,6 +501,6 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
         pickle_logger.seal_run()
         envs.close()
 
-    out_dir = f"/hri/rawstreams/project/klac_2026-01/SparseContinuous/{args.env_id}_{args.exp_name}_pickles"
+    out_dir = f"/hri/rawstreams/project/klac_2026-01/MinAtarDaniel/{args.env_id}_{args.exp_name}"
     pickle_logger.dump_all(out_dir)
 
