@@ -171,7 +171,6 @@ def collect_metrics(root: Path) -> Dict[str, Dict[str, Dict[str, List[np.ndarray
         # heuristic: detect variant token anywhere in folder name
         variant = detect_variant(run_dir.name)
         pkl_map = {"episodic_return.pkl": "return",
-                   "entropy.pkl":         "entropy",
                    "q_values.pkl":        "q"}
 
         for pkl_file, key in pkl_map.items():
@@ -277,57 +276,6 @@ def plot_q_values_per_env(metrics, out_path):
     fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-def plot_auc(metrics, out_path):
-    """Fig 4: bar-plot of AUC across envs (higher = better sample-efficiency)."""
-    records = []
-    for variant, env_dict in metrics.items():
-        for env, m in env_dict.items():
-            steps, mean, _ = aggregate_runs(*m["return"])
-            auc = np.trapz(mean, steps) / steps[-1]
-            records.append({"Variant": variant, "Env": env, "AUC": auc})
-    df = pd.DataFrame(records)
-    order = df.groupby("Variant")["AUC"].median().sort_values(ascending=False).index
-    plt.figure(figsize=FIGSIZE)
-    sns.barplot(data=df, x="Variant", y="AUC", order=order,
-                palette="tab10", width=0.75, capsize=.02, errcolor=".3")
-    plt.ylabel("Normalised AUC")
-    plt.xlabel("")
-    plt.tight_layout()
-    plt.savefig(out_path, format="svg", bbox_inches="tight")
-
-
-def plot_auc_curves_per_env(metrics, out_path):
-    fig_w, fig_h = FIGSIZE[0] * N_COLS, FIGSIZE[1] * N_ROWS
-    fig, axes = plt.subplots(N_ROWS, N_COLS,
-                             figsize=(fig_w, fig_h),
-                             sharey=True,
-                             sharex="none")
-    axes = axes.flatten()
-    variants = sorted(metrics.keys())
-
-    for env_ax, env in zip(axes, MUJOCO_ENVS):
-        for i, variant in enumerate(variants):
-            if env not in metrics[variant]:
-                continue
-            steps, mean, _ = aggregate_runs(*metrics[variant][env]["return"])
-            auc_cum = cumtrapz_np(mean, steps) / steps
-            env_ax.plot(steps, auc_cum,
-                        label=variant,
-                        color=colors[i],
-                        linewidth=0.9)
-        env_ax.set_title(env, fontsize=7)
-        env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3)
-
-    axes[0].set_ylabel("Cumulative AUC / step")
-    add_global_legend(fig, variants, colors)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_file_svg = out_path / "fig4_mujoco_auc_per_env.svg"
-    out_file_png = out_path / "fig4_mujoco_auc_per_env.png"
-    fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
-    fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
 
 if __name__ == "__main__":
     root = Path("/hri/rawstreams/project/klac_2026-01/")
@@ -339,5 +287,4 @@ if __name__ == "__main__":
     # plot_learning_curves_minatar(metrics, outdir / "fig1_minatar_curves.pdf")
     plot_learning_curves_mujoco(metrics, outdir)
     plot_q_values_per_env(metrics, outdir)
-    plot_auc_curves_per_env(metrics, outdir)
     print("✓ All figures written to", outdir.resolve())

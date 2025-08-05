@@ -157,7 +157,8 @@ def detect_variant(run_dir_name: str) -> str:
 
     return "UNKNOWN"
 
-def collect_metrics(root: Path):
+
+def collect_metrics(root: Path) -> Dict[str, Dict[str, Dict[str, List[np.ndarray]]]]:
     """
     Walk KLAC experiment directory and gather:
         metrics[variant][env][metric] -> (steps_list, vals_list)
@@ -166,11 +167,12 @@ def collect_metrics(root: Path):
     for run_dir in root.glob("*"):
         if not run_dir.is_dir():
             continue
-        parts = run_dir.name.split("_", 1)         # e.g. HopperKLAC_42 -> ['HopperKLAC', '42']
+        parts   = run_dir.name.split("_", 1)         # e.g. HopperKLAC_42 -> ['HopperKLAC', '42']
         env_tag = parts[0].split('-', 1)[0]          # HopperKLAC -> Hopper
         # heuristic: detect variant token anywhere in folder name
         variant = detect_variant(run_dir.name)
-        pkl_map = {"entropy.pkl": "entropy"}
+        pkl_map = {"episodic_return.pkl": "return",
+                   "q_values.pkl":        "q"}
 
         for pkl_file, key in pkl_map.items():
             fp = run_dir / pkl_file
@@ -186,10 +188,39 @@ def collect_metrics(root: Path):
             metrics[variant][env_tag][key][1].extend(vals_list)
     return metrics
 
+# ---------- plotting routines ------------------------------------------------------------
+def plot_learning_curves_minatar(metrics, out_path):
+    """Fig 1: per-game learning curves on MinAtar (5 panels, SAC vs KLAC)."""
+    tasks = ("Breakout", "Asterix", "Seaquest", "Freeway", "SpaceInvaders")
+    colours = {"SAC": sns.color_palette("tab10")[0],
+               "KLAC": sns.color_palette("tab10")[1]}
+    fig, axes = plt.subplots(1, len(tasks), figsize=(FIGSIZE[0]*len(tasks)/2, FIGSIZE[1]),
+                             sharey=True)
+    for env, ax in zip(tasks, axes):
+        for variant in ("SAC", "KLAC"):
+            if env not in metrics[variant]:
+                continue
+            steps, mean, ci = aggregate_runs(*metrics[variant][env]["return"])
+            ax.plot(steps, mean, label=variant,
+                    color=colours[variant], linewidth=0.9)
+            ax.fill_between(steps, mean-ci, mean+ci,
+                            color=colours[variant], alpha=0.25, linewidth=0)
+        ax.set_title(env, fontsize=7)
+        ax.set_xlabel("Environment steps")
+        ax.grid(True, linewidth=0.3)
+    axes[0].set_ylabel("Episodic return")
+    axes[-1].legend(frameon=False, bbox_to_anchor=(1.02, 1.0))
+    plt.tight_layout()
+    fig.savefig(out_path, format="svg", bbox_inches="tight")
 
-def plot_entropy_per_env(metrics, out_path):
-    fig, axes = plt.subplots(N_ROWS, N_COLS,
-                             figsize=(FIGSIZE[0]*N_COLS, FIGSIZE[1]*N_ROWS))
+def plot_learning_curves_mujoco(metrics, out_path):
+    fig_w = FIGSIZE[0] * N_COLS          # keep each panel single-column width
+    fig_h = FIGSIZE[1] * N_ROWS
+    fig, axes = plt.subplots(
+        N_ROWS, N_COLS,
+        figsize=(fig_w, fig_h),
+        sharey=False
+    )
     axes = axes.flatten()
     variants = sorted(metrics.keys())
 
@@ -197,7 +228,7 @@ def plot_entropy_per_env(metrics, out_path):
         for i, variant in enumerate(variants):
             if env not in metrics[variant]:
                 continue
-            mean, lo, hi = aggregate_runs(*metrics[variant][env]["entropy"])
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
             env_ax.fill_between(EVAL_STEPS, lo, hi,
                                 alpha=0.2, facecolor=colors[i])
             env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
@@ -206,13 +237,44 @@ def plot_entropy_per_env(metrics, out_path):
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
-    axes[0].set_ylabel("Policy entropy")
+    axes[0].set_ylabel("Episodic return")
     add_global_legend(fig, variants, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(out_path / "fig7_mujoco_entropy_per_env.svg",
-                format="svg", bbox_inches="tight")
-    fig.savefig(out_path / "fig7_mujoco_entropy_per_env.png",
-                format="png", dpi=300, bbox_inches="tight")
+    out_file_svg = out_path / "fig2_mujoco_curves_per_env.svg"
+    out_file_png = out_path / "fig2_mujoco_curves_per_env.png"
+    fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
+    fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+def plot_q_values_per_env(metrics, out_path):
+    fig_w, fig_h = FIGSIZE[0] * N_COLS, FIGSIZE[1] * N_ROWS
+    fig, axes = plt.subplots(N_ROWS, N_COLS,
+                             figsize=(fig_w, fig_h),
+                             sharey=False)
+    axes = axes.flatten()
+    variants = sorted(metrics.keys())
+
+    for env_ax, env in zip(axes, MUJOCO_ENVS):
+        for i, variant in enumerate(variants):
+            if env not in metrics[variant] or "q" not in metrics[variant][env]:
+                continue
+            steps, mean, ci = aggregate_runs(*metrics[variant][env]["q"])
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2, facecolor=colors[i])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
+                        color=colors[i], label=variant)
+        env_ax.set_title(env, fontsize=7)
+        env_ax.set_xlabel("Env steps")
+        env_ax.grid(True, linewidth=.3)
+
+    axes[0].set_ylabel(r"$Q_t$ (critic)")
+    add_global_legend(fig, variants, colors)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    out_file_svg = out_path / "fig3_mujoco_q_values_per_env.svg"
+    out_file_png = out_path / "fig3_mujoco_q_values_per_env.png"
+    fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
+    fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -224,5 +286,6 @@ if __name__ == "__main__":
     metrics = collect_metrics(root)
 
     # plot_learning_curves_minatar(metrics, outdir / "fig1_minatar_curves.pdf")
-    plot_entropy_per_env(metrics, outdir)
+    plot_learning_curves_mujoco(metrics, outdir)
+    plot_q_values_per_env(metrics, outdir)
     print("✓ All figures written to", outdir.resolve())

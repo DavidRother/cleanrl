@@ -12,12 +12,12 @@ import matplotlib as mpl
 
 
 mpl.rcParams.update({
-    "font.size": 9,                # base font  ↔  ≥9 pt
-    "axes.labelsize": 9,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "legend.fontsize": 8,
+    "font.size": 12,                # base font  ↔  ≥9 pt
+    "axes.labelsize": 12,
+    "axes.titlesize": 12,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "legend.fontsize": 10,
     "font.family": "serif",
     "font.serif": [
         "Times New Roman",      # Windows / macOS
@@ -28,6 +28,7 @@ mpl.rcParams.update({
     ],      # matches TMLR template
     "pdf.fonttype": 42,            # embed as editable text, not paths
 })
+colors = ["#008fd5", "#007D81", "#6a6a6a", "#810f7c", "#fc4f30", "#e5ae38", "#6d904f"]
 
 
 def load_pickle(path: Path):
@@ -75,7 +76,7 @@ def collect_metrics(root: Path):
     return metrics
 
 
-def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean) -> dict:
+def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean, label_map=None) -> dict:
     if sac_key not in score_dict:
         raise KeyError(f"SAC baseline '{sac_key}' not found in score_dict")
 
@@ -89,7 +90,8 @@ def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean) -
     # 2) create a normalised copy
     norm_dict = {}
     for algo, arr in score_dict.items():
-        norm_dict[algo] = arr / sac_reference       # broadcasting (runs, tasks)/(tasks,)
+        new_name = label_map[algo] if label_map is not None else algo
+        norm_dict[new_name] = arr / sac_reference       # broadcasting (runs, tasks)/(tasks,)
 
     return norm_dict
 
@@ -109,11 +111,15 @@ if __name__ == "__main__":
                           for e in envs]
         score_dict[algo] = np.stack(per_env_arrays, axis=1)
 
-    score_dict_norm = normalise_to_sac(score_dict, sac_key="SAC", ref_func=np.mean)
+    algorithm_order = ["KLAC", "KLAC+bonus", "SAC", "KLAC+bonus+anneal"]
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$"}
+    score_dict_norm = normalise_to_sac(score_dict, sac_key="SAC", ref_func=np.mean, label_map=algorithms_label_map)
 
     aggregate_vec = lambda x: np.array([
         metrics.aggregate_mean(x),
-        metrics.aggregate_iqm(x)
+        metrics.aggregate_iqm(x),
+        metrics.aggregate_median(x)
     ])
 
     point_est, ci_bounds = rly.get_interval_estimates(
@@ -123,16 +129,14 @@ if __name__ == "__main__":
         confidence_interval_size=0.95
     )
 
-    aggregators = ["Mean", "IQM"]
+    aggregators = ["Mean", "IQM", "Median"]
 
-    algorithms = list(score_dict.keys())
-    # algorithms_label = ["KLAC", "KLAC-basic", "SAC", "KLAC-bias"]
+    algorithms_old = list(score_dict.keys())
+    algorithms = [algorithms_label_map[algo] for algo in algorithm_order]
+    # palette = sns.color_palette("colorblind", len(algorithms))
+    # hatches = ["", "//", "xx", "\\\\"]  # SAC, KLAC, KLAC+bonus, KLAC+all
 
-    palette = sns.color_palette("colorblind", len(algorithms))
-    hatches = ["", "//", "xx", "\\\\"]  # SAC, KLAC, KLAC+bonus, KLAC+all
-
-    colour_map = dict(zip(algorithms, palette))
-    hatch_map = dict(zip(algorithms, hatches))
+    colour_map = dict(zip(algorithms, colors))
 
     fig, axes = plot_utils.plot_interval_estimates(
         point_est, ci_bounds,
@@ -142,13 +146,17 @@ if __name__ == "__main__":
         colors=colour_map
     )
 
-    for ax in np.ravel(axes):
-        for algo, patch in zip(algorithms, ax.patches):
-            patch.set_edgecolor("black")
-            patch.set_linewidth(0.4)
+    klac_vals = ci_bounds["KLAC"][1]  # KLAC = full “KLAC+bonus+anneal” after label_map
+    for i, ax in enumerate(np.ravel(axes)):
+        v_full = int(klac_vals[i]) + 1  # KLAC value for this metric (Mean, IQM, Median)
+        ticks = [0.9, 1.0, 1.1]  # 1 ↔ mid-point ↔ KLAC
+        ticks.sort()  # makes sure they’re in ascending order
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([f"{t}" for t in ticks])  # pretty printing (optional)
+        ax.set_xlim(ticks[0], ticks[-1])  # tight bounds
 
         ax.grid(axis="x", linestyle=":", linewidth=0.4)
-        ax.set_ylabel("")  # algorithm labels already visible
+        ax.set_ylabel("")
 
     two_col_width = 6.8
     aspect = 0.45
