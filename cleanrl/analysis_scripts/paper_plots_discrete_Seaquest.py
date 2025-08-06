@@ -33,8 +33,8 @@ mpl.rcParams.update({
 sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
 FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
-MINATAR_ENVS = ("Asterix", "Breakout")
-N_COLS, N_ROWS = 2, 2
+MINATAR_ENVS = ("Seaquest")
+N_COLS, N_ROWS = 2, 1
 MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 500)
 SMOOTH_WINDOW = 100
@@ -171,44 +171,47 @@ def plot_learning_curves_minatar(metrics, out_path):
         figsize=(fig_w, fig_h),
         sharey=False
     )
+    axes = axes.flatten()
     variants = sorted(metrics.keys())
     algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
                             "KLAC+bonus": r"KLAC$_{-a}$"}
     algorithms_list = ["KLAC", "SAC", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
     algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
 
-    for env_ax, env in zip(axes[0], MINATAR_ENVS):
-        for i, variant in enumerate(variants):
-            if env not in metrics[variant]:
-                continue
-            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
-            env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
-                        color=algorithm_color_map[algorithms_label_map[variant]],
-                        label=algorithms_label_map[variant])
-        env_ax.set_title(env, fontsize=10)
-        env_ax.grid(True, linewidth=.3, linestyle='--')
-    algorithm_color_map[algorithms_label_map[variant]]
-    for env_ax, env in zip(axes[1], MINATAR_ENVS):
-        for i, variant in enumerate(variants):
-            if env not in metrics[variant]:
-                continue
-            mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
-            env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
-                        color=algorithm_color_map[algorithms_label_map[variant]],
-                        label=algorithms_label_map[variant])
-        env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3, linestyle='--')
+    env_ax = axes[0]
+    env = MINATAR_ENVS
+    for i, variant in enumerate(variants):
+        if env not in metrics[variant]:
+            continue
+        mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
+        env_ax.fill_between(EVAL_STEPS, lo, hi,
+                            alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+        env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                    color=algorithm_color_map[algorithms_label_map[variant]],
+                    label=algorithms_label_map[variant])
+    env_ax.set_title(env, fontsize=10)
+    env_ax.grid(True, linewidth=.3, linestyle='--')
 
-    axes[0][0].set_ylabel("Episodic return")
-    axes[1][0].set_ylabel("Q values")
+    env_ax = axes[1]
+    for i, variant in enumerate(variants):
+        if env not in metrics[variant]:
+            continue
+        mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
+        env_ax.fill_between(EVAL_STEPS, lo, hi,
+                            alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+        env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                    color=algorithm_color_map[algorithms_label_map[variant]],
+                    label=algorithms_label_map[variant])
+    env_ax.set_title(env, fontsize=10)
+    env_ax.set_xlabel("Env steps")
+    env_ax.grid(True, linewidth=.3, linestyle='--')
+
+    axes[0].set_ylabel("Episodic return")
+    axes[1].set_ylabel("Q values")
     add_global_legend(fig, algorithms_list, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_file_svg = out_path / "asterix_breakout_plot.svg"
-    out_file_png = out_path / "asterix_breakout_plot.png"
+    out_file_svg = out_path / "seaquest_plot.svg"
+    out_file_png = out_path / "seaquest_plot.png"
     fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
     fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
     plt.close(fig)

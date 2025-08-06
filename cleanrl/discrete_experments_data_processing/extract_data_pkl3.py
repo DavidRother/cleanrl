@@ -28,11 +28,11 @@ from tqdm import tqdm
 RET_RE = re.compile(r"/charts/episodic_length$")        # change if you prefer qf2/…
 
 PATTERNS = {
-    "episode_length":  RET_RE,
+    "episodic_length":  RET_RE,
 }
 
 OUTFILES = {
-    "episode_length":  "episodic_length.pkl",
+    "episodic_length":  "episodic_length.pkl",
 }
 
 
