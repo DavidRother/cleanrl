@@ -56,9 +56,7 @@ def collect_scalars(ev_path: Path):
     acc.Reload()
 
     buckets = {
-        "return":  ([], []),        # (steps_list, vals_list)
-        "entropy": ([], []),
-        "q":       ([], []),
+        "episodic_length":  ([], []),
     }
 
     # --- (3) iterate over ALL scalar tags ------------------------------------

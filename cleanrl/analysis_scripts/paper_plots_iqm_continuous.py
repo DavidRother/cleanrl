@@ -28,7 +28,7 @@ mpl.rcParams.update({
     ],      # matches TMLR template
     "pdf.fonttype": 42,            # embed as editable text, not paths
 })
-colors = ["#008fd5", "#007D81", "#6a6a6a", "#810f7c", "#fc4f30", "#e5ae38", "#6d904f"]
+colors = ["#007D81", "#008fd5", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
 
 
 def load_pickle(path: Path):
@@ -59,8 +59,19 @@ def detect_variant(run_dir_name: str) -> str:
     return "UNKNOWN"
 
 
+def top10_mean(v: np.ndarray, k: int = 10) -> float:
+    """Mean of the k highest values in v (works even if len(v) < k)."""
+    k = min(k, v.size)                 # clamp k to available samples
+    if k == 0:
+        return np.nan                  # or 0.0, whichever you prefer
+    # grab the k largest elements without a full sort
+    top_k = np.partition(v, -k)[-k:]   # O(n) instead of O(n log n)
+    return np.mean(top_k)
+
+
 def collect_metrics(root: Path):
-    metrics: Dict[str, Dict[str, Dict[str, List[List[np.ndarray]]]]] = {}
+    """Return nested dict[algo][env]['return'] → list[float]."""
+    metrics: Dict[str, Dict[str, Dict[str, List[np.ndarray]]]] = {}
     for run_dir in root.iterdir():
         if not run_dir.is_dir():
             continue
@@ -72,7 +83,9 @@ def collect_metrics(root: Path):
         blob = load_pickle(pkl_file)
         steps_list, vals_list = blob["steps"], blob["vals"]
         metrics.setdefault(variant, {}).setdefault(env_tag, {}).setdefault("return", [])
-        metrics[variant][env_tag]["return"].extend([np.mean(vals[-10:]) for vals in vals_list])
+        # last-10-episode average per run
+        metrics[variant][env_tag]["return"].extend([top10_mean(np.asarray(vals, dtype=np.float32))
+                                                    for vals in vals_list])
     return metrics
 
 
@@ -81,8 +94,8 @@ def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean, l
         raise KeyError(f"SAC baseline '{sac_key}' not found in score_dict")
 
     # 1) reference per task (shape = [tasks])
-    sac_scores     = score_dict[sac_key]            # (runs, tasks)
-    sac_reference  = ref_func(sac_scores, axis=0)   # → (tasks,)
+    sac_scores = score_dict[sac_key]            # (runs, tasks)
+    sac_reference = ref_func(sac_scores, axis=0)   # → (tasks,)
 
     # avoid divide-by-zero for very poor or un-trained SAC runs
     sac_reference  = np.where(sac_reference == 0, 1e-8, sac_reference)
@@ -92,6 +105,15 @@ def normalise_to_sac(score_dict: dict, sac_key: str = "SAC", ref_func=np.mean, l
     for algo, arr in score_dict.items():
         new_name = label_map[algo] if label_map is not None else algo
         norm_dict[new_name] = arr / sac_reference       # broadcasting (runs, tasks)/(tasks,)
+
+    return norm_dict
+
+
+def relabel_dict(score_dict: dict, label_map=None) -> dict:
+    norm_dict = {}
+    for algo, arr in score_dict.items():
+        new_name = label_map[algo] if label_map is not None else algo
+        norm_dict[new_name] = arr      # broadcasting (runs, tasks)/(tasks,)
 
     return norm_dict
 
@@ -111,10 +133,11 @@ if __name__ == "__main__":
                           for e in envs]
         score_dict[algo] = np.stack(per_env_arrays, axis=1)
 
-    algorithm_order = ["KLAC", "KLAC+bonus", "SAC", "KLAC+bonus+anneal"]
+    algorithm_order = ["KLAC", "KLAC+bonus", "KLAC+bonus+anneal", "SAC"]
     algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
                             "KLAC+bonus": r"KLAC$_{-a}$"}
     score_dict_norm = normalise_to_sac(score_dict, sac_key="SAC", ref_func=np.mean, label_map=algorithms_label_map)
+    relabeled_dict = relabel_dict(score_dict, algorithms_label_map)
 
     aggregate_vec = lambda x: np.array([
         metrics.aggregate_mean(x),
@@ -122,12 +145,25 @@ if __name__ == "__main__":
         metrics.aggregate_median(x)
     ])
 
+    # point_est, ci_bounds = rly.get_interval_estimates(
+    #     score_dict,
+    #     aggregate_vec,
+    #     reps=5000,
+    #     confidence_interval_size=0.95
+    # )
+
     point_est, ci_bounds = rly.get_interval_estimates(
-        score_dict_norm,
-        aggregate_vec,
-        reps=5000,
-        confidence_interval_size=0.95
+        relabeled_dict,  # << NO normalisation here
+        aggregate_vec,  # [Mean, IQM, Median]
+        reps=5000, confidence_interval_size=0.95
     )
+
+    baseline = point_est['SAC']
+    baseline_ci_bounds = ci_bounds["SAC"]
+
+    for algo in point_est:
+        point_est[algo] = point_est[algo] / baseline
+        ci_bounds[algo] = ci_bounds[algo] / baseline
 
     aggregators = ["Mean", "IQM", "Median"]
 

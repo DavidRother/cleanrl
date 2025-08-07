@@ -39,6 +39,9 @@ MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 1000)
 SMOOTH_WINDOW = 1000
 colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+algorithms_old_order = [ "SAC", "KLAC+bonus+anneal", "KLAC+bonus", "KLAC+no_bonus", "KLAC+no_bonus+anneal"]
+algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                        "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -125,6 +128,8 @@ def detect_variant(run_dir_name: str) -> str:
         flags = []
         if "klac_bias" in descriptor:
             flags.append("bonus")
+        if "klac_no_bias" in descriptor:
+            flags.append("no_bonus")
         if "annealing" in descriptor:
             flags.append("anneal")
         if "non_uniform_prior" in descriptor:
@@ -132,7 +137,6 @@ def detect_variant(run_dir_name: str) -> str:
         return "KLAC" + (("+" + "+".join(flags)) if flags else "")
 
     return "UNKNOWN"
-
 def collect_metrics(root: Path):
     """
     Walk KLAC experiment directory and gather:

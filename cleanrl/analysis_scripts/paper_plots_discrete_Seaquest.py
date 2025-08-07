@@ -38,7 +38,7 @@ N_COLS, N_ROWS = 2, 1
 MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 500)
 SMOOTH_WINDOW = 100
-colors = ["#810f7c", "#6a6a6a", "#007D81", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+colors = ["#6a6a6a", "#810f7c", "#007D81", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -173,9 +173,9 @@ def plot_learning_curves_minatar(metrics, out_path):
     )
     axes = axes.flatten()
     variants = sorted(metrics.keys())
-    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
-                            "KLAC+bonus": r"KLAC$_{-a}$"}
-    algorithms_list = ["KLAC", "SAC", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+    algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
     algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
 
     env_ax = axes[0]
@@ -190,6 +190,7 @@ def plot_learning_curves_minatar(metrics, out_path):
                     color=algorithm_color_map[algorithms_label_map[variant]],
                     label=algorithms_label_map[variant])
     env_ax.set_title(env, fontsize=10)
+    env_ax.set_xlabel("Env steps")
     env_ax.grid(True, linewidth=.3, linestyle='--')
 
     env_ax = axes[1]
