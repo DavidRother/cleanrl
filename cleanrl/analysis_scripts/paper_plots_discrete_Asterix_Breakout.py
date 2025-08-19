@@ -191,7 +191,7 @@ def plot_learning_curves_minatar(metrics, out_path):
                         label=algorithms_label_map[variant])
         env_ax.set_title(env, fontsize=10)
         env_ax.grid(True, linewidth=.3, linestyle='--')
-    algorithm_color_map[algorithms_label_map[variant]]
+
     for env_ax, env in zip(axes[1], MINATAR_ENVS):
         for i, variant in enumerate(variants):
             if env not in metrics[variant]:

@@ -22,15 +22,14 @@ mpl.rcParams.update({
         "Liberation Serif",
         "DejaVu Serif"
     ],
-    "axes.labelsize":    12,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   12,
+    "axes.labelsize":    10,
+    "xtick.labelsize":   8,
+    "ytick.labelsize":   8,
+    "legend.fontsize":   10,
     "axes.linewidth": 0.75,
     "pdf.fonttype":      42,   # editable text in the PDF
     "ps.fonttype":       42,
 })
-sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
 FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
 MINATAR_ENVS = ("Seaquest")
@@ -38,7 +37,7 @@ N_COLS, N_ROWS = 2, 1
 MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 500)
 SMOOTH_WINDOW = 100
-colors = ["#6a6a6a", "#810f7c", "#007D81", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#e5ae38", "#6d904f"]
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -125,6 +124,8 @@ def detect_variant(run_dir_name: str) -> str:
         flags = []
         if "klac_bias" in descriptor:
             flags.append("bonus")
+        if "klac_no_bias" in descriptor:
+            flags.append("no_bonus")
         if "annealing" in descriptor:
             flags.append("anneal")
         if "non_uniform_prior" in descriptor:

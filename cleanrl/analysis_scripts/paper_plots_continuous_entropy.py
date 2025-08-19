@@ -38,30 +38,38 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import seaborn as sns
 from scipy.interpolate import interp1d
 
 # ---------- matplotlib defaults for TMLR -------------------------------------------------
 mpl.rcParams.update({
-    "font.family":      "serif",
-    "font.serif":       ["Computer Modern"],
-    "axes.labelsize":    7,
-    "xtick.labelsize":   6,
-    "ytick.labelsize":   6,
-    "legend.fontsize":   6,
-    "axes.linewidth": 0.75,
-    "pdf.fonttype":      42,   # editable text in the PDF
-    "ps.fonttype":       42,
+    "font.size": 8,                # base font  ↔  ≥9 pt
+    "axes.labelsize": 9,
+    "axes.titlesize": 9,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 9,
+    "font.family": "serif",
+    "font.serif": [
+        "Times New Roman",      # Windows / macOS
+        "Nimbus Roman",         # Linux (URW)
+        "TeX Gyre Termes",      # TeX Live
+        "Liberation Serif",     # free replacement
+        "DejaVu Serif"          # ships with matplotlib, always present
+    ],      # matches TMLR template
+    "pdf.fonttype": 42,            # embed as editable text, not paths
 })
-sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
-FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
+FIGSIZE = (6.8, 4.2)        # inches, single-column in TMLR
 MUJOCO_ENVS = ("Hopper", "Walker2d", "HalfCheetah", "Ant", "InvertedPendulum", "Humanoid", "Swimmer", "Reacher")
 N_COLS, N_ROWS = 4, 2
 MAX_STEPS = 1000000
-EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 100)
-SMOOTH_WINDOW = 400
-colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 200)
+SMOOTH_WINDOW = 100
+colors = ["#6a6a6a", "#810f7c", "#007D81", "#008fd5", "#fc4f30", "#6d904f"]
+algorithms_old_order = ["SAC", "KLAC+bonus+anneal", "KLAC+bonus", "KLAC"]
+algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
+                        "KLAC+bonus": r"KLAC$_{-a}$"}
+algorithm_color_map = {algorithms_label_map[alg]: colors[i] for i, alg in enumerate(algorithms_old_order)}
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -189,25 +197,29 @@ def collect_metrics(root: Path):
 
 def plot_entropy_per_env(metrics, out_path):
     fig, axes = plt.subplots(N_ROWS, N_COLS,
-                             figsize=(FIGSIZE[0]*N_COLS, FIGSIZE[1]*N_ROWS))
+                             figsize=(FIGSIZE[0], FIGSIZE[1]))
     axes = axes.flatten()
     variants = sorted(metrics.keys())
 
     for env_ax, env in zip(axes, MUJOCO_ENVS):
-        for i, variant in enumerate(variants):
+        for i, variant in enumerate(algorithms_old_order):
             if env not in metrics[variant]:
                 continue
             mean, lo, hi = aggregate_runs(*metrics[variant][env]["entropy"])
+            label = algorithms_label_map[variant]
+            color = colors[algorithms_old_order.index(variant)]
             env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=colors[i])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
-                        color=colors[i], label=variant)
-        env_ax.set_title(env, fontsize=7)
+                                alpha=0.2, facecolor=color)
+            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                        color=colors[i], label=label)
+        env_ax.set_title(env + "-v5")
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
     axes[0].set_ylabel("Policy entropy")
-    add_global_legend(fig, variants, colors)
+    axes[4].set_ylabel("Policy entropy")
+    labels = [algorithms_label_map[variant] for variant in algorithms_old_order]
+    add_global_legend(fig, labels, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out_path / "fig7_mujoco_entropy_per_env.svg",
                 format="svg", bbox_inches="tight")

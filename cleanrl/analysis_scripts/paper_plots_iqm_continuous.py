@@ -12,12 +12,12 @@ import matplotlib as mpl
 
 
 mpl.rcParams.update({
-    "font.size": 12,                # base font  ↔  ≥9 pt
-    "axes.labelsize": 12,
-    "axes.titlesize": 12,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
-    "legend.fontsize": 10,
+    "font.size": 6,                # base font  ↔  ≥9 pt
+    "axes.labelsize": 6,
+    "axes.titlesize": 6,
+    "xtick.labelsize": 6,
+    "ytick.labelsize": 6,
+    "legend.fontsize": 6,
     "font.family": "serif",
     "font.serif": [
         "Times New Roman",      # Windows / macOS
@@ -28,7 +28,7 @@ mpl.rcParams.update({
     ],      # matches TMLR template
     "pdf.fonttype": 42,            # embed as editable text, not paths
 })
-colors = ["#007D81", "#008fd5", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
+colors = ["#008fd5", "#007D81", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
 
 
 def load_pickle(path: Path):
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     point_est, ci_bounds = rly.get_interval_estimates(
         relabeled_dict,  # << NO normalisation here
         aggregate_vec,  # [Mean, IQM, Median]
-        reps=5000, confidence_interval_size=0.95
+        reps=1000, confidence_interval_size=0.95
     )
 
     baseline = point_est['SAC']
@@ -195,7 +195,7 @@ if __name__ == "__main__":
         ax.set_ylabel("")
 
     two_col_width = 6.8
-    aspect = 0.45
+    aspect = 0.25
     fig.set_size_inches(two_col_width, two_col_width * aspect)
 
     # fig.supxlabel('SAC normalised Scores (±95 % bootstrap CI)', y=0.04, fontsize=14, va='center')

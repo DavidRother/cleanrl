@@ -38,10 +38,11 @@ N_COLS, N_ROWS = 5, 1
 MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 1000)
 SMOOTH_WINDOW = 1000
-colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
-algorithms_old_order = [ "SAC", "KLAC+bonus+anneal", "KLAC+bonus", "KLAC+no_bonus", "KLAC+no_bonus+anneal"]
+colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#fc4f30", "#6d904f"]
+algorithms_old_order = [ "SAC", "KLAC+bonus+anneal", "KLAC+no_bonus+anneal", "KLAC+bonus", "KLAC+no_bonus"]
 algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
                         "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+algorithm_color_map = {algorithms_label_map[alg]: colors[i] for i, alg in enumerate(algorithms_old_order)}
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -184,15 +185,18 @@ def plot_learning_curves_minatar(metrics, out_path):
                 continue
             mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
             env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=colors[i])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
-                        color=colors[i], label=variant)
-        env_ax.set_title(env, fontsize=7)
+                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                        color=algorithm_color_map[algorithms_label_map[variant]],
+                        label=algorithms_label_map[variant])
+        env_ax.set_title(env, fontsize=10)
         env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3)
+        env_ax.grid(True, linewidth=.3, linestyle='--')
 
     axes[0].set_ylabel("Episodic return")
-    add_global_legend(fig, variants, colors)
+    labels = [algorithms_label_map[variant] for variant in algorithms_old_order]
+    colors_used = [algorithm_color_map[l] for l in labels]
+    add_global_legend(fig, labels, colors_used)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_file_svg = out_path / "fig2_minatar_curves_per_env.svg"
     out_file_png = out_path / "fig2_minatar_curves_per_env.png"
