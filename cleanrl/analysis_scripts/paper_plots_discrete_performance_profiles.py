@@ -16,12 +16,6 @@ from matplotlib.scale import FuncScale
 # Matplotlib / seaborn style (matches TMLR template)
 # ---------------------------------------------------------------------------
 mpl.rcParams.update({
-    "font.size": 9,
-    "axes.labelsize": 9,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "legend.fontsize": 8,
     "font.family": "serif",
     "font.serif": [
         "Times New Roman",
@@ -30,8 +24,15 @@ mpl.rcParams.update({
         "Liberation Serif",
         "DejaVu Serif"
     ],
-    "pdf.fonttype": 42,
+    "axes.labelsize":    12,
+    "xtick.labelsize":   10,
+    "ytick.labelsize":   10,
+    "legend.fontsize":   12,
+    "axes.linewidth": 0.75,
+    "pdf.fonttype":      42,   # editable text in the PDF
+    "ps.fonttype":       42,
 })
+sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 colors = ["#007D81", "#6a6a6a", "#008fd5", "#810f7c", "#e5ae38", "#fc4f30", "#e5ae38", "#6d904f"]
 # ---------------------------------------------------------------------------
 # Helpers
@@ -159,11 +160,11 @@ if __name__ == "__main__":
         reps=5_000,
         confidence_interval_size=0.95
     )
-    two_col_width = 6.8
+    two_col_width = 6.5
     algorithms = [algorithms_label_map[algo] for algo in algorithms_old_order]
     colour_map = dict(zip(algorithms, colors))
 
-    fig_pp, ax_pp = plt.subplots(figsize=(two_col_width, two_col_width * 0.55))
+    fig_pp, ax_pp = plt.subplots(figsize=(two_col_width, 3))
 
     plot_utils.plot_performance_profiles(
         perf_prof,
@@ -173,6 +174,19 @@ if __name__ == "__main__":
         xlabel=r'SAC Normalised return $\tau$ (log scale)',
         ax=ax_pp
     )
+
+    _LABEL_FS = 10
+    _TICK_FS = 9
+    _TITLE_FS = 10
+    _LEGEND_FS = 10
+    # Axes labels & title
+    ax_pp.xaxis.label.set_size(_LABEL_FS)
+    ax_pp.yaxis.label.set_size(_LABEL_FS)
+    ax_pp.title.set_size(_TITLE_FS)
+    # Tick labels
+    ax_pp.tick_params(axis='both', which='major', labelsize=_TICK_FS)
+    for tick in ax_pp.get_xticklabels() + ax_pp.get_yticklabels():
+        tick.set_fontsize(_TICK_FS)
 
     ax_pp.set_xscale('log')
     ax_pp.set_xlim(0.4, 40)  # start at 1, end at 70
@@ -199,11 +213,17 @@ if __name__ == "__main__":
         loc="lower center",
         bbox_to_anchor=(0.5, 1.02),
         frameon=False,
-        fontsize=12,
+        fontsize=_LEGEND_FS,
         ncol=len(ordered_labels),
         handlelength=1.5,
         columnspacing=0.8,
     )
+
+    # Ensure legend text size too (in case rliable/mpl altered it)
+    leg = ax_pp.get_legend()
+    if leg is not None:
+        for txt in leg.get_texts():
+            txt.set_fontsize(_LEGEND_FS)
 
     lin_boundary = 1.0  # x-value where scaling switches
     ax_pp.axvline(lin_boundary,
@@ -213,11 +233,14 @@ if __name__ == "__main__":
                   zorder=0)
 
     ax_pp.set_ylabel(r'Fraction of runs with score ≥ $\tau$')
+    # Re-assert ylabel size explicitly (keeps requirement "after rliable call")
+    ax_pp.yaxis.label.set_size(_LABEL_FS)
+
     ax_pp.grid(linestyle=':', linewidth=0.4)
     fig_pp.subplots_adjust(top=0.90)
     fig_pp.tight_layout()
 
-    fig_pp.savefig(OUTDIR / 'minatar_perf_profile2.svg', format='svg', bbox_inches='tight')
-    fig_pp.savefig(OUTDIR / 'minatar_perf_profile2.png', format='png', dpi=300, bbox_inches='tight')
+    fig_pp.savefig(OUTDIR / 'minatar_perf_profile4.svg', format='svg', bbox_inches='tight')
+    fig_pp.savefig(OUTDIR / 'minatar_perf_profile4.png', format='png', dpi=300, bbox_inches='tight')
 
     plt.show()

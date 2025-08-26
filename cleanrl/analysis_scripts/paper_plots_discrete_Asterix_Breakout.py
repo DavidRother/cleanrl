@@ -22,17 +22,17 @@ mpl.rcParams.update({
         "Liberation Serif",
         "DejaVu Serif"
     ],
-    "axes.labelsize":    12,
-    "xtick.labelsize":   10,
-    "ytick.labelsize":   10,
-    "legend.fontsize":   12,
+    "axes.labelsize":    10,
+    "xtick.labelsize":   9,
+    "ytick.labelsize":   9,
+    "legend.fontsize":   10,
     "axes.linewidth": 0.75,
     "pdf.fonttype":      42,   # editable text in the PDF
     "ps.fonttype":       42,
 })
 sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
-FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
+FIGSIZE = (6.5, 2.1)        # inches, single-column in TMLR
 MINATAR_ENVS = ("Asterix", "Breakout")
 N_COLS, N_ROWS = 2, 2
 MAX_STEPS = 3000000
@@ -170,7 +170,7 @@ def plot_learning_curves_minatar(metrics, out_path):
     fig_h = FIGSIZE[1] * N_ROWS
     fig, axes = plt.subplots(
         N_ROWS, N_COLS,
-        figsize=(fig_w, fig_h),
+        figsize=(6.5, 4),
         sharey=False
     )
     variants = sorted(metrics.keys())

@@ -23,23 +23,22 @@ mpl.rcParams.update({
         "DejaVu Serif"
     ],
     "axes.labelsize":    10,
-    "xtick.labelsize":   8,
-    "ytick.labelsize":   8,
+    "xtick.labelsize":   9,
+    "ytick.labelsize":   9,
     "legend.fontsize":   10,
     "axes.linewidth": 0.75,
     "pdf.fonttype":      42,   # editable text in the PDF
     "ps.fonttype":       42,
 })
+sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
-FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
-MINATAR_ENVS = ("Seaquest")
-N_COLS, N_ROWS = 2, 1
+FIGSIZE = (6.5, 2.1)        # inches, single-column in TMLR
+MINATAR_ENVS = ("Asterix", "Breakout")
+N_COLS, N_ROWS = 2, 2
 MAX_STEPS = 3000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 500)
 SMOOTH_WINDOW = 100
-colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#e5ae38", "#6d904f"]
-algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
-algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
+colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#fc4f30", "#6d904f"]
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -48,6 +47,17 @@ def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
         blob = pickle.load(f)
     return blob
 
+def add_global_legend(fig, variant_labels, colour_cycle):
+    """Place a centred legend above all subplots."""
+    handles = [plt.Line2D([0], [0],
+                          color=colour_cycle[i % len(colour_cycle)],
+                          linewidth=1.0)
+               for i, _ in enumerate(variant_labels)]
+    fig.legend(handles, variant_labels,
+               loc="upper center",
+               bbox_to_anchor=(0.5, 1.04),
+               ncol=len(variant_labels),
+               frameon=False)
 
 def aggregate_runs(steps_list: List[np.ndarray],
                    vals_list:  List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -156,19 +166,25 @@ def collect_metrics(root: Path):
 
 # ---------- plotting routines ------------------------------------------------------------
 def plot_learning_curves_minatar(metrics, out_path):
-    fig_w = FIGSIZE[0] * N_COLS  # keep each panel single-column width
+    fig_w = FIGSIZE[0] * N_COLS
     fig_h = FIGSIZE[1] * N_ROWS
     fig, axes = plt.subplots(
         N_ROWS, N_COLS,
-        figsize=(fig_w, fig_h),
+        figsize=(6.5, 4),
         sharey=False
     )
-    axes = axes.flatten()
-    variants = sorted(metrics.keys())
-    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
-                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+
+    # Algorithm label map
+    algorithms_label_map = {
+        "KLAC+bonus+anneal": r"KLAC",
+        "KLAC+no_bonus": r"KLAC$_{-ab}$",
+        "SAC": "SAC",
+        "KLAC+bonus": r"KLAC$_{-a}$",
+        "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"
+    }
     algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
-    algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
+
+    # Assign distinct markers and consistent colors
     markers = {
         "SAC": "o",          # circle
         "KLAC": "s",         # square
@@ -176,58 +192,78 @@ def plot_learning_curves_minatar(metrics, out_path):
         r"KLAC$_{-a}$": "^", # triangle
         r"KLAC$_{-ab}$": "v" # inverted triangle
     }
+    algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
 
-    env_ax = axes[0]
-    env = MINATAR_ENVS
+    # Right-end marker offset positions to avoid overlap
     marker_offsets = np.linspace(-2.5, 0, len(algorithms_list))
-    for i, variant in enumerate(variants):
-        if env not in metrics[variant]:
-            continue
-        label = algorithms_label_map[variant]
-        mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
-        env_ax.fill_between(EVAL_STEPS, lo, hi,
-                            alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
-        env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
-                    color=algorithm_color_map[algorithms_label_map[variant]],
-                    label=algorithms_label_map[variant])
-        if algorithms_label_map[variant] in ["SAC", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]:
-            x_pos = EVAL_STEPS[-1] * (1 + marker_offsets[i] * 0.05)
-        else:
-            x_pos = EVAL_STEPS[-1]
-        y_pos = mean[-1]
-        env_ax.plot(x_pos, y_pos,
-                    marker=markers[label],
-                    color=algorithm_color_map[label],
-                    markersize=4,
-                    linestyle="None")
-    env_ax.set_title(env, fontsize=10)
-    env_ax.set_xlabel("Env steps")
-    env_ax.grid(True, linewidth=.3, linestyle='--')
 
-    env_ax = axes[1]
-    for i, variant in enumerate(variants):
-        if env not in metrics[variant]:
-            continue
-        label = algorithms_label_map[variant]
-        mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
-        env_ax.fill_between(EVAL_STEPS, lo, hi,
-                            alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
-        env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
-                    color=algorithm_color_map[algorithms_label_map[variant]],
-                    label=algorithms_label_map[variant])
-        x_pos = EVAL_STEPS[-1]
-        y_pos = mean[-1]
-        env_ax.plot(x_pos, y_pos,
-                    marker=markers[label],
-                    color=algorithm_color_map[label],
-                    markersize=4,
-                    linestyle="None")
-    env_ax.set_title(env, fontsize=10)
-    env_ax.set_xlabel("Env steps")
-    env_ax.grid(True, linewidth=.3, linestyle='--')
+    # Episodic return (top row)
+    for i, (env_ax, env) in enumerate(zip(axes[0], MINATAR_ENVS)):
+        for j, variant in enumerate(sorted(metrics.keys())):
+            if env not in metrics[variant]:
+                continue
+            label = algorithms_label_map[variant]
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
 
-    axes[0].set_ylabel("Episodic return")
-    axes[1].set_ylabel("Q values")
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2,
+                                facecolor=algorithm_color_map[label])
+            line, = env_ax.plot(EVAL_STEPS, mean,
+                                linewidth=1.0,
+                                color=algorithm_color_map[label],
+                                label=label)
+
+            # Add marker near the end, shifted slightly in x to avoid overlap
+            # x_pos = EVAL_STEPS[-1] * (1 + marker_offsets[j] * 0.05)
+            if i == 1:
+                if algorithms_label_map[variant] in ["SAC", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]:
+                    x_pos = EVAL_STEPS[-1] * (1 + marker_offsets[j] * 0.05)
+                else:
+                    x_pos = EVAL_STEPS[-1]
+            else:
+                x_pos = EVAL_STEPS[-1]
+            y_pos = mean[-1]
+            env_ax.plot(x_pos, y_pos,
+                        marker=markers[label],
+                        color=algorithm_color_map[label],
+                        markersize=4,
+                        linestyle="None")
+
+        env_ax.set_title(env, fontsize=10)
+        env_ax.grid(True, linewidth=.3, linestyle='--')
+
+    # Q-values (bottom row)
+    for env_ax, env in zip(axes[1], MINATAR_ENVS):
+        for j, variant in enumerate(sorted(metrics.keys())):
+            if env not in metrics[variant]:
+                continue
+            label = algorithms_label_map[variant]
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
+
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2,
+                                facecolor=algorithm_color_map[label])
+            line, = env_ax.plot(EVAL_STEPS, mean,
+                                linewidth=1.0,
+                                color=algorithm_color_map[label],
+                                label=label)
+
+            # Add marker near the end
+            x_pos = EVAL_STEPS[-1] * (1 + marker_offsets[j] * 0.05)
+            y_pos = mean[-1]
+            env_ax.plot(x_pos, y_pos,
+                        marker=markers[label],
+                        color=algorithm_color_map[label],
+                        markersize=4,
+                        linestyle="None")
+
+        env_ax.set_xlabel("Env steps")
+        env_ax.grid(True, linewidth=.3, linestyle='--')
+
+    axes[0][0].set_ylabel("Episodic return")
+    axes[1][0].set_ylabel("Q values")
+
+    # Build legend with line + marker handles
     handles = [
         plt.Line2D([0], [0],
                    color=algorithm_color_map[alg],
@@ -242,12 +278,12 @@ def plot_learning_curves_minatar(metrics, out_path):
                bbox_to_anchor=(0.5, 1.04),
                ncol=len(algorithms_list),
                frameon=False)
+
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_file_svg = out_path / "seaquest_plot.svg"
-    out_file_png = out_path / "seaquest_plot.png"
+    out_file_svg = out_path / "asterix_breakout_plot_inclusion.svg"
+    out_file_png = out_path / "asterix_breakout_plot_inclusion.png"
     fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
     fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -260,3 +296,4 @@ if __name__ == "__main__":
     # plot_learning_curves_minatar(metrics, outdir / "fig1_minatar_curves.pdf")
     plot_learning_curves_minatar(metrics, outdir)
     print("✓ All figures written to", outdir.resolve())
+    plt.show()

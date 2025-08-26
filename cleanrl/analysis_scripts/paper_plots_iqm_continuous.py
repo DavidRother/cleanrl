@@ -12,23 +12,24 @@ import matplotlib as mpl
 
 
 mpl.rcParams.update({
-    "font.size": 6,                # base font  ↔  ≥9 pt
-    "axes.labelsize": 6,
-    "axes.titlesize": 6,
-    "xtick.labelsize": 6,
-    "ytick.labelsize": 6,
-    "legend.fontsize": 6,
     "font.family": "serif",
     "font.serif": [
-        "Times New Roman",      # Windows / macOS
-        "Nimbus Roman",         # Linux (URW)
-        "TeX Gyre Termes",      # TeX Live
-        "Liberation Serif",     # free replacement
-        "DejaVu Serif"          # ships with matplotlib, always present
-    ],      # matches TMLR template
-    "pdf.fonttype": 42,            # embed as editable text, not paths
+        "Times New Roman",
+        "Nimbus Roman",
+        "TeX Gyre Termes",
+        "Liberation Serif",
+        "DejaVu Serif"
+    ],
+    "axes.labelsize":    12,
+    "xtick.labelsize":   10,
+    "ytick.labelsize":   10,
+    "legend.fontsize":   12,
+    "axes.linewidth": 0.75,
+    "pdf.fonttype":      42,   # editable text in the PDF
+    "ps.fonttype":       42,
 })
-colors = ["#008fd5", "#007D81", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
+# colors = ["#008fd5", "#007D81", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
+colors = ["#008fd5", "#007D81", "#e5ae38", "#810f7c", "#6a6a6a", "#fc4f30", "#e5ae38", "#6d904f"]
 
 
 def load_pickle(path: Path):
@@ -47,11 +48,13 @@ def detect_variant(run_dir_name: str) -> str:
 
     if descriptor.startswith("klac"):
         flags = []
-        if "with_bonus"      in descriptor:
+        if "with_bonus" in descriptor:
             flags.append("bonus")
-        if "with_annealing"  in descriptor:
+        if "no_bonus" in descriptor:
+            flags.append("no_bonus")
+        if "with_annealing" in descriptor:
             flags.append("anneal")
-        if "with_prior"      in descriptor:
+        if "with_prior" in descriptor:
             flags.append("prior")
         label = "KLAC" + (("+" + "+".join(flags)) if flags else "")
         return label
@@ -133,9 +136,9 @@ if __name__ == "__main__":
                           for e in envs]
         score_dict[algo] = np.stack(per_env_arrays, axis=1)
 
-    algorithm_order = ["KLAC", "KLAC+bonus", "KLAC+bonus+anneal", "SAC"]
-    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
-                            "KLAC+bonus": r"KLAC$_{-a}$"}
+    algorithm_order = ["KLAC+no_bonus", "KLAC+bonus", "KLAC+no_bonus+anneal", "KLAC+bonus+anneal", "SAC"]
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
     score_dict_norm = normalise_to_sac(score_dict, sac_key="SAC", ref_func=np.mean, label_map=algorithms_label_map)
     relabeled_dict = relabel_dict(score_dict, algorithms_label_map)
 
@@ -178,29 +181,53 @@ if __name__ == "__main__":
         point_est, ci_bounds,
         metric_names=aggregators,
         algorithms=algorithms,
-        xlabel='SAC normalised Scores (±95 % bootstrap CI)',
+        # REMOVE per-axes xlabel to avoid duplicates:
+        xlabel=None,
         colors=colour_map
     )
 
-    klac_vals = ci_bounds["KLAC"][1]  # KLAC = full “KLAC+bonus+anneal” after label_map
+    # Figure size
+    two_col_width = 6.5
+    fig.set_size_inches(two_col_width, 2.1)
+
+    # Font sizes
+    _LABEL_FS = 10
+    _TICK_FS = 9
+    _TITLE_FS = 10
+    _LEGEND_FS = 10
+
+    # Your tick/xlim/grid edits (unchanged)
+    klac_vals = ci_bounds["KLAC"][1]
     for i, ax in enumerate(np.ravel(axes)):
-        v_full = int(klac_vals[i]) + 1  # KLAC value for this metric (Mean, IQM, Median)
-        ticks = [0.9, 1.0, 1.1]  # 1 ↔ mid-point ↔ KLAC
-        ticks.sort()  # makes sure they’re in ascending order
+        ticks = [0.9, 1.0, 1.1]
         ax.set_xticks(ticks)
-        ax.set_xticklabels([f"{t}" for t in ticks])  # pretty printing (optional)
-        ax.set_xlim(ticks[0], ticks[-1])  # tight bounds
+        ax.set_xlim(ticks[0], ticks[-1])
+        ax.grid(axis="x", linestyle=":", linewidth=1.5, color="#666666")
+        ax.set_ylabel("")  # keep y-labels empty per your plot style
 
-        ax.grid(axis="x", linestyle=":", linewidth=0.4)
-        ax.set_ylabel("")
+    # Apply font sizes once per axes
+    for ax in fig.get_axes():
+        # ensure no per-axes xlabels (super label will be used)
+        ax.set_xlabel("")
+        ax.set_title(ax.get_title(), fontsize=_TITLE_FS)
+        ax.tick_params(axis="both", labelsize=_TICK_FS)
 
-    two_col_width = 6.8
-    aspect = 0.25
-    fig.set_size_inches(two_col_width, two_col_width * aspect)
+    # One figure-level x label (controls size centrally)
+    # fig.supxlabel('SAC normalised Scores (±95 % bootstrap CI)',
+    #               fontsize=_LABEL_FS, y=0.03)  # tweak y if needed
+    axes[1].set_xlabel('SAC normalised Scores (±95 % bootstrap CI)',
+                       fontsize=_LABEL_FS, labelpad=8)
 
-    # fig.supxlabel('SAC normalised Scores (±95 % bootstrap CI)', y=0.04, fontsize=14, va='center')
+    # If there is a legend and you want to control its size globally:
+    # leg = fig.legends[0] if fig.legends else None
+    # if leg:
+    #     leg.set_title(leg.get_title().get_text(), prop={'size': _LEGEND_FS})
+    #     for t in leg.get_texts():
+    #         t.set_fontsize(_LEGEND_FS)
 
-    fig.tight_layout()
+    # Layout AFTER adding supxlabel
+    fig.tight_layout(rect=(0, 0.05, 1, 1))  # leave a little room for the super label
+
     fig.savefig(OUTDIR / 'mujoco_iqm_barplot.svg', format="svg", bbox_inches="tight")
     fig.savefig(OUTDIR / 'mujoco_iqm_barplot.png', format="png", dpi=300, bbox_inches="tight")
     plt.show()
