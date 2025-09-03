@@ -65,11 +65,17 @@ N_COLS, N_ROWS = 4, 2
 MAX_STEPS = 1000000
 EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 200)
 SMOOTH_WINDOW = 100
-colors = ["#6a6a6a", "#810f7c", "#007D81", "#008fd5", "#fc4f30", "#6d904f"]
-algorithms_old_order = ["SAC", "KLAC+bonus+anneal", "KLAC+bonus", "KLAC"]
-algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC": r"KLAC$_{-ab}$", "SAC": "SAC",
-                        "KLAC+bonus": r"KLAC$_{-a}$"}
-algorithm_color_map = {algorithms_label_map[alg]: colors[i] for i, alg in enumerate(algorithms_old_order)}
+colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#007D81", "#810f7c", "#fc4f30", "#e5ae38", "#6d904f"]
+algorithm_order = ["SAC", "KLAC+bonus+anneal", "KLAC+no_bonus+anneal", "KLAC+bonus", "KLAC+no_bonus"]
+algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                        "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+algorithms = [algorithms_label_map[algo] for algo in algorithm_order]
+algorithm_color_map = {algorithms_label_map[alg]: colors[i] for i, alg in enumerate(algorithm_order)}
+colour_map = dict(zip(algorithms, colors))
+_LABEL_FS = 10
+_TICK_FS = 9
+_TITLE_FS = 10
+_LEGEND_FS = 10
 
 # ---------- helpers ----------------------------------------------------------------------
 def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
@@ -77,18 +83,6 @@ def load_pickle(path: Path) -> Dict[str, List[np.ndarray]]:
     with path.open("rb") as f:
         blob = pickle.load(f)
     return blob
-
-def add_global_legend(fig, variant_labels, colour_cycle):
-    """Place a centred legend above all subplots."""
-    handles = [plt.Line2D([0], [0],
-                          color=colour_cycle[i % len(colour_cycle)],
-                          linewidth=1.0)
-               for i, _ in enumerate(variant_labels)]
-    fig.legend(handles, variant_labels,
-               loc="upper center",
-               bbox_to_anchor=(0.5, 1.04),
-               ncol=len(variant_labels),
-               frameon=False)
 
 def aggregate_runs(steps_list: List[np.ndarray],
                    vals_list:  List[np.ndarray]) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -154,11 +148,13 @@ def detect_variant(run_dir_name: str) -> str:
 
     if descriptor.startswith("klac"):
         flags = []
-        if "with_bonus"      in descriptor:
+        if "with_bonus" in descriptor:
             flags.append("bonus")
-        if "with_annealing"  in descriptor:
+        if "no_bonus" in descriptor:
+            flags.append("no_bonus")
+        if "with_annealing" in descriptor:
             flags.append("anneal")
-        if "with_prior"      in descriptor:
+        if "with_prior" in descriptor:
             flags.append("prior")
         label = "KLAC" + (("+" + "+".join(flags)) if flags else "")
         return label
@@ -200,32 +196,59 @@ def plot_entropy_per_env(metrics, out_path):
                              figsize=(FIGSIZE[0], FIGSIZE[1]))
     axes = axes.flatten()
     variants = sorted(metrics.keys())
+    markers = {
+        "SAC": "o",          # circle
+        "KLAC": "s",         # square
+        r"KLAC$_{-b}$": "D", # diamond
+        r"KLAC$_{-a}$": "^", # triangle
+        r"KLAC$_{-ab}$": "v" # inverted triangle
+    }
+    marker_offsets = np.linspace(-2.5, 0, len(algorithms))
 
     for env_ax, env in zip(axes, MUJOCO_ENVS):
-        for i, variant in enumerate(algorithms_old_order):
+        for i, variant in enumerate(algorithm_order):
             if env not in metrics[variant]:
                 continue
             mean, lo, hi = aggregate_runs(*metrics[variant][env]["entropy"])
             label = algorithms_label_map[variant]
-            color = colors[algorithms_old_order.index(variant)]
+            color = colour_map[label]
             env_ax.fill_between(EVAL_STEPS, lo, hi,
                                 alpha=0.2, facecolor=color)
             env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
-                        color=colors[i], label=label)
+                        color=color, label=label)
+            x_pos = EVAL_STEPS[-1] * (1 + marker_offsets[i] * 0.05)
+            y_pos = mean[-1]
+            env_ax.plot(x_pos, y_pos,
+                        marker=markers[label],
+                        color=algorithm_color_map[label],
+                        markersize=4,
+                        linestyle="None")
         env_ax.set_title(env + "-v5")
         env_ax.set_xlabel("Env steps")
         env_ax.grid(True, linewidth=.3)
 
     axes[0].set_ylabel("Policy entropy")
     axes[4].set_ylabel("Policy entropy")
-    labels = [algorithms_label_map[variant] for variant in algorithms_old_order]
-    add_global_legend(fig, labels, colors)
+    labels = [algorithms_label_map[variant] for variant in algorithm_order]
+    handles = [
+        plt.Line2D([0], [0],
+                   color=colour_map[alg],
+                   marker=markers[alg],
+                   linewidth=1.0,
+                   markersize=4,
+                   label=alg)
+        for alg in algorithms
+    ]
+    fig.legend(handles, algorithms,
+               loc="upper center",
+               bbox_to_anchor=(0.5, 1.04),
+               ncol=len(algorithms),
+               frameon=False)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out_path / "fig7_mujoco_entropy_per_env.svg",
                 format="svg", bbox_inches="tight")
     fig.savefig(out_path / "fig7_mujoco_entropy_per_env.png",
                 format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -238,3 +261,4 @@ if __name__ == "__main__":
     # plot_learning_curves_minatar(metrics, outdir / "fig1_minatar_curves.pdf")
     plot_entropy_per_env(metrics, outdir)
     print("✓ All figures written to", outdir.resolve())
+    plt.show()

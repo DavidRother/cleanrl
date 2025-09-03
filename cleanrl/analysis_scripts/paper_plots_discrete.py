@@ -15,25 +15,31 @@ from scipy.interpolate import interp1d
 
 # ---------- matplotlib defaults for TMLR -------------------------------------------------
 mpl.rcParams.update({
-    "font.family":      "serif",
-    "font.serif":       ["Computer Modern"],
-    "axes.labelsize":    7,
-    "xtick.labelsize":   6,
-    "ytick.labelsize":   6,
-    "legend.fontsize":   6,
+    "font.family": "serif",
+    "font.serif": [
+        "Times New Roman",
+        "Nimbus Roman",
+        "TeX Gyre Termes",
+        "Liberation Serif",
+        "DejaVu Serif"
+    ],
+    "axes.labelsize":    10,
+    "xtick.labelsize":   9,
+    "ytick.labelsize":   9,
+    "legend.fontsize":   10,
     "axes.linewidth": 0.75,
     "pdf.fonttype":      42,   # editable text in the PDF
     "ps.fonttype":       42,
 })
 sns.set_style("whitegrid", {'axes.edgecolor': '.8'})
 
-FIGSIZE = (3.25, 2.1)        # inches, single-column in TMLR
+FIGSIZE = (6.5, 1.1)        # inches, single-column in TMLR
 MINATAR_ENVS = ("Asterix", "Breakout", "Freeway", "Seaquest", "SpaceInvaders")
 N_COLS, N_ROWS = 5, 1
 MAX_STEPS = 3000000
-EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 100)
-SMOOTH_WINDOW = 1000
-colors = ["#6a6a6a", "#007D81", "#810f7c", "#008fd5", "#fc4f30", "#e5ae38", "#6d904f"]
+EVAL_STEPS = np.linspace(0, MAX_STEPS, num=MAX_STEPS // 500)
+SMOOTH_WINDOW = 100
+colors = ["#6a6a6a", "#810f7c", "#e5ae38", "#007D81", "#008fd5", "#fc4f30", "#6d904f"]
 
 
 # ---------- helpers ----------------------------------------------------------------------
@@ -110,7 +116,7 @@ def cumtrapz_np(y: np.ndarray, x: np.ndarray) -> np.ndarray:
 
 def detect_variant(run_dir_name: str) -> str:
     try:
-        descriptor = run_dir_name.split("__", maxsplit=2)[1].lower()
+        descriptor = run_dir_name.split("__", 1)[1].lower()
     except IndexError:
         descriptor = run_dir_name.lower()
 
@@ -121,12 +127,13 @@ def detect_variant(run_dir_name: str) -> str:
         flags = []
         if "klac_bias" in descriptor:
             flags.append("bonus")
+        if "klac_no_bias" in descriptor:
+            flags.append("no_bonus")
         if "annealing" in descriptor:
             flags.append("anneal")
         if "non_uniform_prior" in descriptor:
             flags.append("prior")
-        label = "KLAC" + (("+" + "+".join(flags)) if flags else "")
-        return label
+        return "KLAC" + (("+" + "+".join(flags)) if flags else "")
 
     return "UNKNOWN"
 
@@ -163,15 +170,16 @@ def collect_metrics(root: Path) -> Dict[str, Dict[str, Dict[str, List[np.ndarray
 
 # ---------- plotting routines ------------------------------------------------------------
 def plot_learning_curves_minatar(metrics, out_path):
-    fig_w = FIGSIZE[0] * N_COLS          # keep each panel single-column width
-    fig_h = FIGSIZE[1] * N_ROWS
     fig, axes = plt.subplots(
         N_ROWS, N_COLS,
-        figsize=(fig_w, fig_h),
+        figsize=(6.5, 2.1),
         sharey=False
     )
-    axes = axes.flatten()
     variants = sorted(metrics.keys())
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+    algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
+    algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
 
     for env_ax, env in zip(axes, MINATAR_ENVS):
         for i, variant in enumerate(variants):
@@ -179,102 +187,87 @@ def plot_learning_curves_minatar(metrics, out_path):
                 continue
             mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
             env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=colors[i])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
-                        color=colors[i], label=variant)
-        env_ax.set_title(env, fontsize=7)
-        env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3)
+                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                        color=algorithm_color_map[algorithms_label_map[variant]],
+                        label=algorithms_label_map[variant])
+        env_ax.set_title(env, fontsize=10)
+        env_ax.grid(True, linewidth=.3, linestyle='--')
 
     axes[0].set_ylabel("Episodic return")
-    add_global_legend(fig, variants, colors)
+    add_global_legend(fig, algorithms_list, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     out_file_svg = out_path / "fig2_minatar_curves_per_env.svg"
     out_file_png = out_path / "fig2_minatar_curves_per_env.png"
     fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
     fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
 
-def plot_q_values_per_env(metrics, out_path):
-    fig_w, fig_h = FIGSIZE[0] * N_COLS, FIGSIZE[1] * N_ROWS
-    fig, axes = plt.subplots(N_ROWS, N_COLS,
-                             figsize=(fig_w, fig_h),
-                             sharey=False)
-    axes = axes.flatten()
+def plot_learning_curves_minatar2(metrics, out_path):
+    fig, axes = plt.subplots(
+        N_ROWS, N_COLS,
+        figsize=(6.5, 4),
+        sharey=False
+    )
     variants = sorted(metrics.keys())
-
-    for env_ax, env in zip(axes, MINATAR_ENVS):
-        for i, variant in enumerate(variants):
-            if env not in metrics[variant] or "q" not in metrics[variant][env]:
-                continue
-            mean, lo, hi = aggregate_runs(*metrics[variant][env]["q"])
-            env_ax.fill_between(EVAL_STEPS, lo, hi,
-                                alpha=0.2, facecolor=colors[i])
-            env_ax.plot(EVAL_STEPS, mean, linewidth=2.5,
-                        color=colors[i], label=variant)
-        env_ax.set_title(env, fontsize=7)
-        env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3)
-
-    axes[0].set_ylabel(r"$Q_t$ (critic)")
-    add_global_legend(fig, variants, colors)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_file_svg = out_path / "fig3_minatar_q_values_per_env.svg"
-    out_file_png = out_path / "fig3_minatar_q_values_per_env.png"
-    fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
-    fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-def plot_auc(metrics, out_path):
-    """Fig 4: bar-plot of AUC across envs (higher = better sample-efficiency)."""
-    records = []
-    for variant, env_dict in metrics.items():
-        for env, m in env_dict.items():
-            steps, mean, _ = aggregate_runs(*m["return"])
-            auc = np.trapz(mean, steps) / steps[-1]
-            records.append({"Variant": variant, "Env": env, "AUC": auc})
-    df = pd.DataFrame(records)
-    order = df.groupby("Variant")["AUC"].median().sort_values(ascending=False).index
-    plt.figure(figsize=FIGSIZE)
-    sns.barplot(data=df, x="Variant", y="AUC", order=order,
-                palette="tab10", width=0.75, capsize=.02, errcolor=".3")
-    plt.ylabel("Normalised AUC")
-    plt.xlabel("")
-    plt.tight_layout()
-    plt.savefig(out_path, format="svg", bbox_inches="tight")
-
-
-def plot_auc_curves_per_env(metrics, out_path):
-    fig_w, fig_h = FIGSIZE[0] * N_COLS, FIGSIZE[1] * N_ROWS
-    fig, axes = plt.subplots(N_ROWS, N_COLS,
-                             figsize=(fig_w, fig_h),
-                             sharey=True,
-                             sharex="none")
-    axes = axes.flatten()
-    variants = sorted(metrics.keys())
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+    algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
+    algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
 
     for env_ax, env in zip(axes, MINATAR_ENVS):
         for i, variant in enumerate(variants):
             if env not in metrics[variant]:
                 continue
-            steps, mean, _ = aggregate_runs(*metrics[variant][env]["return"])
-            auc_cum = cumtrapz_np(mean, steps) / steps
-            env_ax.plot(steps, auc_cum,
-                        label=variant,
-                        color=colors[i],
-                        linewidth=0.9)
-        env_ax.set_title(env, fontsize=7)
-        env_ax.set_xlabel("Env steps")
-        env_ax.grid(True, linewidth=.3)
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                        color=algorithm_color_map[algorithms_label_map[variant]],
+                        label=algorithms_label_map[variant])
+        env_ax.set_title(env, fontsize=10)
+        env_ax.grid(True, linewidth=.3, linestyle='--')
 
-    axes[0].set_ylabel("Cumulative AUC / step")
-    add_global_legend(fig, variants, colors)
+    axes[0].set_ylabel("Episodic return")
+    add_global_legend(fig, algorithms_list, colors)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_file_svg = out_path / "fig4_minatar_auc_per_env.svg"
-    out_file_png = out_path / "fig4_minatar_auc_per_env.png"
+    out_file_svg = out_path / "fig22_minatar_curves_per_env.svg"
+    out_file_png = out_path / "fig22_minatar_curves_per_env.png"
     fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
     fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
-    plt.close(fig)
+
+
+def plot_learning_curves_minatar3(metrics, out_path):
+    fig, axes = plt.subplots(
+        N_ROWS, N_COLS,
+        figsize=(12, 4),
+        sharey=False
+    )
+    variants = sorted(metrics.keys())
+    algorithms_label_map = {"KLAC+bonus+anneal": r"KLAC", "KLAC+no_bonus": r"KLAC$_{-ab}$", "SAC": "SAC",
+                            "KLAC+bonus": r"KLAC$_{-a}$", "KLAC+no_bonus+anneal": r"KLAC$_{-b}$"}
+    algorithms_list = ["SAC", "KLAC", r"KLAC$_{-b}$", r"KLAC$_{-a}$", r"KLAC$_{-ab}$"]
+    algorithm_color_map = {alg: colors[i] for i, alg in enumerate(algorithms_list)}
+
+    for env_ax, env in zip(axes, MINATAR_ENVS):
+        for i, variant in enumerate(variants):
+            if env not in metrics[variant]:
+                continue
+            mean, lo, hi = aggregate_runs(*metrics[variant][env]["return"])
+            env_ax.fill_between(EVAL_STEPS, lo, hi,
+                                alpha=0.2, facecolor=algorithm_color_map[algorithms_label_map[variant]])
+            env_ax.plot(EVAL_STEPS, mean, linewidth=1.0,
+                        color=algorithm_color_map[algorithms_label_map[variant]],
+                        label=algorithms_label_map[variant])
+        env_ax.set_title(env, fontsize=10)
+        env_ax.grid(True, linewidth=.3, linestyle='--')
+
+    axes[0].set_ylabel("Episodic return")
+    add_global_legend(fig, algorithms_list, colors)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    out_file_svg = out_path / "fig23_minatar_curves_per_env.svg"
+    out_file_png = out_path / "fig23_minatar_curves_per_env.png"
+    fig.savefig(out_file_svg, format="svg", bbox_inches="tight")
+    fig.savefig(out_file_png, format="png", dpi=300, bbox_inches="tight")
 
 
 if __name__ == "__main__":
@@ -285,6 +278,7 @@ if __name__ == "__main__":
     metrics = collect_metrics(root)
 
     plot_learning_curves_minatar(metrics, outdir)
-    plot_q_values_per_env(metrics, outdir)
-    plot_auc_curves_per_env(metrics, outdir)
+    plot_learning_curves_minatar2(metrics, outdir)
+    plot_learning_curves_minatar3(metrics, outdir)
     print("✓ All figures written to", outdir.resolve())
+    plt.show()
